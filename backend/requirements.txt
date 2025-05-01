@@ -1,0 +1,5 @@
+Flask>=2.0
+openai>=1.76.2
+python-dotenv>=0.19
+requests>=2.20
+Flask-Cors>=3.0

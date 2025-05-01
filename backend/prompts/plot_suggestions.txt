@@ -1,0 +1,6 @@
+Suggest 3 simple plot ideas for a children's story.
+The story should focus on the learning objective: '{learning_objective}'.
+The main character is: '{character_description}'.
+The story's overall theme is: '{theme}'.
+Each plot idea should be a short paragraph (2-4 sentences) outlining a simple challenge and a positive resolution related to the learning objective.
+Format the output as a numbered list, with each plot starting on a new line after the number (e.g., '1. The character finds...') . Separate plots clearly.

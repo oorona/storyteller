@@ -1,0 +1,366 @@
+/* --- General Styles --- */
+:root {
+    --primary-color: #50a3a2; /* Teal */
+    --secondary-color: #f0f8ff; /* AliceBlue */
+    --accent-color: #f7cac9; /* Light Pink */
+    --text-color: #333;
+    --background-color: #f4f7f6;
+    --white: #fff;
+    --error-color: #d9534f; /* Red */
+    --success-color: #5cb85c; /* Green */
+    --border-color: #ddd;
+    --box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+    --border-radius: 8px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0;
+    background-color: var(--background-color);
+    color: var(--text-color);
+}
+
+header {
+    background: linear-gradient(135deg, var(--primary-color), #7ec8c7);
+    color: var(--white);
+    padding: 1.5rem 1rem;
+    text-align: center;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+header h1 {
+    margin: 0;
+    font-size: 2.2rem;
+}
+header p {
+    margin: 0.5rem 0 0;
+    font-size: 1.1rem;
+    opacity: 0.9;
+}
+
+main#app-container {
+    max-width: 800px;
+    margin: 2rem auto;
+    padding: 1rem;
+    background-color: var(--white);
+    box-shadow: var(--box-shadow);
+    border-radius: var(--border-radius);
+}
+
+footer {
+    text-align: center;
+    margin-top: 2rem;
+    padding: 1.5rem;
+    color: #777;
+    font-size: 0.9rem;
+    border-top: 1px solid var(--border-color);
+}
+
+/* --- Step Navigation --- */
+.step {
+    display: none; /* Hide all steps by default */
+    padding: 25px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    margin-bottom: 20px;
+    background-color: var(--white);
+}
+
+.step.active {
+    display: block; /* Show the active step */
+    animation: fadeIn 0.5s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+h2 {
+    color: var(--primary-color);
+    margin-top: 0;
+    margin-bottom: 1.5rem;
+    padding-bottom: 10px;
+    border-bottom: 2px solid #eee;
+    font-size: 1.6rem;
+    font-weight: 600;
+}
+
+/* --- Forms & Inputs --- */
+form div {
+    margin-bottom: 1.2rem;
+}
+
+label {
+    display: block;
+    margin-bottom: 6px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: #555;
+}
+
+input[type="text"] {
+    width: 100%; /* Full width */
+    padding: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    box-sizing: border-box; /* Include padding/border in width */
+    font-size: 1rem;
+}
+
+input[type="text"]:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px rgba(80, 163, 162, 0.2);
+}
+
+input::placeholder {
+    color: #aaa;
+    font-style: italic;
+}
+
+/* --- Buttons --- */
+.navigation-buttons {
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid #eee;
+    display: flex;
+    justify-content: space-between; /* Space out back/next */
+    align-items: center;
+}
+
+button {
+    padding: 12px 24px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1rem;
+    font-weight: 600;
+    transition: background-color 0.3s ease, transform 0.1s ease;
+}
+
+button:hover {
+    transform: translateY(-1px);
+}
+
+button:active {
+     transform: translateY(0px);
+}
+
+
+button.next-button, button.generate-button {
+    background-color: var(--primary-color);
+    color: var(--white);
+}
+button.next-button:hover, button.generate-button:hover {
+    background-color: #408e8d;
+}
+
+button.back-button {
+    background-color: #f0f0f0;
+    color: var(--text-color);
+    border: 1px solid var(--border-color);
+}
+button.back-button:hover {
+    background-color: #e0e0e0;
+}
+
+button.start-over-button {
+    background-color: var(--accent-color);
+    color: var(--text-color);
+    display: block; /* Center button */
+    margin: 1.5rem auto 0;
+}
+button.start-over-button:hover {
+    background-color: #f5b8b7;
+}
+
+
+button:disabled {
+    background-color: #ccc;
+    color: #888;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+button.generate-button {
+    font-size: 1.1rem;
+    padding: 14px 28px;
+}
+button.generate-button:disabled {
+     background-color: #a5d3d2; /* Lighter teal when disabled */
+}
+
+
+/* --- Suggestions Area --- */
+.suggestions-container {
+    margin-bottom: 1.5rem;
+    min-height: 50px; /* Prevent collapse while loading */
+}
+
+ul.suggestion-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+ul.suggestion-list li {
+    border: 1px solid #eee;
+    padding: 12px 15px;
+    margin-bottom: 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+    background-color: #fcfcfc;
+}
+
+ul.suggestion-list li:hover {
+    background-color: var(--secondary-color);
+    border-left: 4px solid var(--accent-color);
+}
+
+ul.suggestion-list li.selected {
+    background-color: var(--secondary-color);
+    border-left: 4px solid var(--primary-color);
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+
+.selection-display {
+    margin-top: 1rem;
+    padding: 10px;
+    background-color: #f9f9f9;
+    border-radius: 4px;
+    border: 1px dashed var(--border-color);
+    font-size: 0.95rem;
+}
+.selection-display strong {
+    color: var(--primary-color);
+}
+
+
+/* --- Review & Display --- */
+.review-box {
+    background-color: #f9f9f9;
+    padding: 20px;
+    border-radius: var(--border-radius);
+    border: 1px solid #eee;
+    margin-bottom: 1.5rem;
+}
+.review-box h3 {
+    margin-top: 0;
+    color: var(--primary-color);
+}
+.review-box p {
+    margin: 10px 0;
+    padding-bottom: 10px;
+    border-bottom: 1px dotted #eee;
+}
+.review-box p:last-child {
+    border-bottom: none;
+}
+.review-box strong {
+    display: inline-block;
+    min-width: 120px; /* Align values */
+    color: #555;
+}
+
+.generation-controls {
+    text-align: center;
+    margin-top: 1.5rem;
+}
+
+#generation-status {
+    font-style: italic;
+    color: #555;
+    margin-bottom: 1rem;
+    min-height: 1.2em; /* Prevent layout shift */
+    font-weight: bold;
+}
+
+#story-output {
+    border: 1px solid #eee;
+    padding: 25px;
+    background-color: var(--white);
+    border-radius: var(--border-radius);
+    margin-top: 20px;
+}
+#story-output h3 {
+    text-align: center;
+    color: var(--primary-color);
+    margin-bottom: 1.5rem;
+}
+
+#story-image-container {
+    text-align: center;
+    min-height: 150px; /* Space while loading */
+    margin-bottom: 1.5rem;
+    background-color: #f0f0f0; /* Placeholder bg */
+    padding: 10px;
+    border-radius: var(--border-radius);
+    position: relative; /* For potential overlays or spinners */
+}
+
+#story-image {
+    display: block;
+    margin: 0 auto;
+    max-width: 100%;
+    max-height: 450px; /* Limit image height */
+    height: auto;
+    border-radius: var(--border-radius);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    border: 1px solid #eee;
+}
+#story-image[src=""] { /* Hide if src is empty */
+    display: none;
+}
+#story-image[style*="display: none;"] + #image-status { /* Show status if image is hidden */
+    display: block;
+}
+
+
+#story-text-container {
+    margin-top: 1.5rem;
+    padding: 20px;
+    background-color: #fdfdfd;
+    border: 1px dashed var(--border-color);
+    border-radius: 4px;
+    min-height: 100px;
+}
+
+.story-content {
+    white-space: pre-wrap; /* Preserve whitespace and newlines */
+    font-size: 1.1rem;
+    line-height: 1.7;
+    color: #444;
+}
+
+/* --- Utility Classes --- */
+.loading-message {
+    font-style: italic;
+    color: #888;
+    text-align: center;
+    padding: 20px;
+}
+
+.error-message {
+    color: var(--error-color);
+    font-weight: bold;
+    margin-top: 10px;
+    padding: 10px;
+    background-color: #fdd;
+    border: 1px solid var(--error-color);
+    border-radius: 4px;
+    display: none; /* Hidden by default */
+}
+
+/* --- Accessibility --- */
+[aria-live="polite"] {
+    /* Indicate area updates politely */
+}
+[aria-live="assertive"] {
+    /* Indicate important updates (errors) */
+}

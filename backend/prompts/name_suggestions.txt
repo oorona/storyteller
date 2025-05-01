@@ -1,0 +1,5 @@
+Suggest 5 creative and fitting names for a children's story character.
+Character Description: '{character_description}'.
+Story Theme: '{theme}'.
+The names should be easy for a child to read and remember.
+Provide only the names, separated by commas. Example: Sparky, Bolt, Zippy, Whiz, Gadget
