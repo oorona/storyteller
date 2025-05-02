@@ -3,6 +3,7 @@ from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import logging
 import traceback # For detailed error logging
+import threading # Import the threading module
 
 # Imports - Add new service functions
 try:
@@ -140,67 +141,122 @@ def create_image():
     return handle_service_response(image_result, "b64_json")
 
 # --- NEW Endpoint for Book Generation ---
+# Worker function to process a single section in a thread
+def process_section_thread(section_index, section_text, character_name, character_description, character_image_b64, results_list):
+    """Target function for threads to generate prompt and edit image for one section."""
+    try:
+        logger.info(f"Thread-{section_index+1}: Creating image prompt...")
+        img_prompt_result = create_image_prompt_for_section(section_text, character_name, character_description)
+        if "error" in img_prompt_result:
+            raise Exception(f"Image prompt creation failed: {img_prompt_result['error']}")
+        section_image_prompt = img_prompt_result["image_prompt"]
+        logger.info(f"Thread-{section_index+1}: Image prompt created.")
+
+        logger.info(f"Thread-{section_index+1}: Editing base image...")
+        edited_image_result = edit_image_based_on_prompt(character_image_b64, section_image_prompt)
+        if "error" in edited_image_result:
+            raise Exception(f"Image editing failed: {edited_image_result['error']}")
+        section_image_b64 = edited_image_result["b64_json"]
+        logger.info(f"Thread-{section_index+1}: Image edited successfully.")
+
+        # Store successful result at the correct index
+        results_list[section_index] = {"text": section_text, "b64_json": section_image_b64}
+
+    except Exception as e:
+        logger.error(f"Thread-{section_index+1}: Error processing section: {e}")
+        # Store error information at the correct index
+        results_list[section_index] = {"error": str(e)}
+
 @app.route('/api/book/generate', methods=['POST'])
 def create_book():
     if not openai_ready:
         return jsonify({"error": "OpenAI service is not available."}), 503
 
     data = request.json
-    # ... (Input extraction and validation remain the same) ...
     if not data: return jsonify({"error": "Invalid JSON payload"}), 400
+    logger.info(f"Received book generation request (keys): {list(data.keys())}")
+
+    # --- 1. Extract Inputs ---
     required_fields = ['child_name', 'character_name', 'character_description', 'plot_choice', 'learning_objective', 'theme', 'character_image_b64']
-    missing_fields = [field for field in required_fields if not data.get(field)];
+    missing_fields = [field for field in required_fields if not data.get(field)]
     if missing_fields: return jsonify({"error": f"Missing required fields: {', '.join(missing_fields)}"}), 400
+
     child_name = data['child_name']; character_name = data['character_name']; character_description = data['character_description'];
     plot_choice = data['plot_choice']; learning_objective = data['learning_objective']; theme = data['theme'];
     personality_keywords = data.get('personality_keywords', []); character_image_b64 = data['character_image_b64'];
 
-    book_pages = []
-
     try:
-        # --- Generate Full Story ---
+        # --- 2. Generate Full Story (Sequential) ---
         logger.info("Step 1/4: Generating full story...")
         story_result = generate_story(child_name, character_name, character_description, plot_choice, learning_objective, theme, personality_keywords)
         if "error" in story_result: raise Exception(f"Story generation failed: {story_result['error']}")
         full_story_text = story_result["story_text"]
         logger.info("Step 1/4: Full story generated.")
 
-        # --- Section Story ---
+        # --- 3. Section Story (Sequential) ---
         logger.info("Step 2/4: Sectioning story...")
         section_result = get_story_sections(full_story_text)
         if "error" in section_result: raise Exception(f"Story sectioning failed: {section_result['error']}")
         story_sections = section_result["sections"]
         logger.info(f"Step 2/4: Story sectioned into {len(story_sections)} parts.")
 
-        # --- Process Each Section ---
-        logger.info("Step 3/4: Generating prompts and images for sections...")
+        # --- 4. Process Each Section in Parallel ---
+        logger.info("Step 3/4: Starting parallel generation of prompts and images...")
+        threads = []
+        # Pre-allocate results list with None placeholders
+        section_results = [None] * len(story_sections)
+
         for i, section_text in enumerate(story_sections):
-            logger.info(f"Processing section {i+1}/{len(story_sections)}...")
-            # Create Image Prompt
-            img_prompt_result = create_image_prompt_for_section(section_text, character_name, character_description)
-            if "error" in img_prompt_result: raise Exception(f"Image prompt creation failed for section {i+1}: {img_prompt_result['error']}")
-            section_image_prompt = img_prompt_result["image_prompt"]
-            # Edit Base Image
-            edited_image_result = edit_image_based_on_prompt(character_image_b64, section_image_prompt)
-            if "error" in edited_image_result: raise Exception(f"Image editing failed for section {i+1}: {edited_image_result['error']}")
-            section_image_b64 = edited_image_result["b64_json"] # Value is correctly extracted
+            logger.info(f"Creating thread for section {i+1}...")
+            # Create a thread for each section
+            thread = threading.Thread(
+                target=process_section_thread,
+                args=(i, section_text, character_name, character_description, character_image_b64, section_results)
+            )
+            threads.append(thread)
+            thread.start() # Start the thread
 
-            # *** CORRECTED KEY used when building the final response ***
-            book_pages.append({
-                "text": section_text,
-                "b64_json": section_image_b64 # Use consistent key "b64_json"
-            })
-            logger.info(f"Section {i+1} processing complete.")
+        # Wait for all threads to complete
+        logger.info("Waiting for all section processing threads to finish...")
+        for i, thread in enumerate(threads):
+            thread.join() # Wait for this thread to finish
+            logger.info(f"Thread for section {i+1} finished.")
+        logger.info("Step 3/4: All section processing threads completed.")
 
-        logger.info("Step 3/4: All sections processed.")
-        logger.info("Step 4/4: Book generation successful.")
-        # --- Return Result ---
-        return jsonify({"pages": book_pages}), 200
+        # --- 5. Assemble Final Result and Check for Errors ---
+        book_pages = []
+        encountered_error = False
+        for i, result in enumerate(section_results):
+            if result is None: # Should not happen if thread ran, but safety check
+                logger.error(f"Result missing for section {i+1}. Assuming error.")
+                encountered_error = True
+                book_pages.append({"text": story_sections[i], "error": "Processing failed unexpectedly."})
+            elif "error" in result:
+                logger.error(f"Error recorded for section {i+1}: {result['error']}")
+                encountered_error = True
+                # Include error in final response? Or just fail? Let's include text + error msg.
+                book_pages.append({"text": story_sections[i], "error": result['error'], "b64_json": None}) # Add b64_json:None for consistency?
+            else:
+                # Success for this section
+                book_pages.append(result) # result already has {"text": ..., "b64_json": ...}
+
+        if encountered_error:
+            logger.error("Errors encountered during parallel section processing. Returning potentially incomplete book.")
+            # Decide: return partial book with errors, or return a general error?
+            # Let's return the partial book for now, frontend can handle pages with errors.
+            # return jsonify({"error": "Failed to generate all book pages.", "pages": book_pages}), 500 # Option to return 500
+            logger.info("Step 4/4: Book generation finished with errors in some pages.")
+            return jsonify({"pages": book_pages, "warning": "Some pages encountered errors during image generation."}), 200 # Return 200 but with errors noted
+
+        else:
+             # All sections processed successfully
+            logger.info("Step 4/4: Book generation successful.")
+            return jsonify({"pages": book_pages}), 200
 
     except Exception as e:
-        logger.error(f"Error during book generation process: {e}")
+        logger.error(f"Error during book generation main process: {e}")
         logger.error(traceback.format_exc())
-        return jsonify({"error": f"Book generation failed: An internal error occurred."}), 500 # Keep error generic for user
+        return jsonify({"error": f"Book generation failed: An internal error occurred."}), 500
 
 
 # Static File Serving & Main Execution (remain the same)
