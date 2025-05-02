@@ -1,0 +1,7 @@
+Please divide the following children's story into approximately 4 logical sections or pages. Focus on natural breaks in the narrative like scene changes, introduction, rising action, climax, and resolution. Output ONLY a valid JSON array of strings, where each string is a section of the story. Do not include explanations, introductory text, or markdown formatting. Ensure the entire original story text is included across the sections.
+
+Example output format:
+["Section 1 text...", "Section 2 text...", "Section 3 text...", "Section 4 text..."]
+
+STORY:
+{full_story_text}

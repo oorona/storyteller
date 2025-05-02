@@ -4,7 +4,7 @@ This is a full-stack web application that allows users (parents) to generate per
 
 ## Project Structure
 ```
-ai_story_generator/
+storygenerator/
 ├── backend/
 │   ├── app.py             # Main Flask application
 │   ├── openai_service.py  # Handles OpenAI API calls

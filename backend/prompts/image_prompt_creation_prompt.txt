@@ -1,0 +1,10 @@
+Analyze this specific section of a children's story involving the character '{character_name}'. Identify the single most important visual moment or scene described. Output ONLY a concise, descriptive prompt (max 25 words) suitable for generating an illustration for this specific section using an AI image generator like DALL-E. The prompt should focus on the character's action, the setting, and key objects or mood in this section. Do NOT add style instructions like 'children's book illustration'.
+
+STORY SECTION TEXT:
+{story_section_text}
+
+CHARACTER INFO:
+Name: {character_name}
+Description: {character_description}
+
+CONCISE IMAGE PROMPT:

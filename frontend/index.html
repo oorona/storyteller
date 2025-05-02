@@ -9,7 +9,7 @@
 <body>
     <header>
         <h1>Create a Personalized Story</h1>
-        <p>Let's make a unique story for your child!</p>
+        <p>Let's make a unique story book for your child!</p>
     </header>
 
     <main id="app-container">
@@ -48,7 +48,7 @@
             <h2 id="step-2-heading">Step 2: Choose a Character Idea</h2>
             <div id="character-suggestions" class="suggestions-container" aria-live="polite">
                 <p class="loading-message">Loading character ideas...</p>
-                </div>
+            </div>
             <div id="character-selection" class="selection-display">
                  <p>Selected Character Idea: <strong id="selected-character-text">None</strong></p>
             </div>
@@ -63,10 +63,10 @@
             <h2 id="step-3-heading">Step 3: Choose a Name for Your Character</h2>
             <div id="name-suggestions" class="suggestions-container" aria-live="polite">
                 <p class="loading-message">Loading name ideas...</p>
-                 </div>
+            </div>
              <div id="name-selection" class="selection-display">
                  <p>Selected Name: <strong id="selected-name-text">None</strong></p>
-                 </div>
+            </div>
              <div class="navigation-buttons">
                 <button type="button" class="back-button" onclick="goToStep(2)">&larr; Back</button>
                 <button type="button" class="next-button" onclick="goToStep(4)" id="btn-step-3-next" disabled>Next: Plot Ideas &rarr;</button>
@@ -76,11 +76,11 @@
 
         <section id="step-4-plot" class="step" aria-labelledby="step-4-heading">
             <h2 id="step-4-heading">Step 4: Choose a Plot Idea</h2>
-             <div id="plot-suggestions" class="suggestions-container" aria-live="polite">
+            <div id="plot-suggestions" class="suggestions-container" aria-live="polite">
                  <p class="loading-message">Loading plot ideas...</p>
-                </div>
+            </div>
              <div id="plot-selection" class="selection-display">
-                 <p>Selected Plot Idea: <strong id="selected-plot-text">None</strong></p>
+                <p>Selected Plot Idea: <strong id="selected-plot-text">None</strong></p>
             </div>
              <div class="navigation-buttons">
                 <button type="button" class="back-button" onclick="goToStep(3)">&larr; Back</button>
@@ -91,53 +91,66 @@
 
         <section id="step-5-review" class="step" aria-labelledby="step-5-heading">
             <h2 id="step-5-heading">Step 5: Review Your Choices</h2>
-            <div id="review-details" class="review-box">
-                <h3>Story Details:</h3>
-                <p><strong>Child's Name:</strong> <span id="review-child-name"></span></p>
-                <p><strong>Learning Goal:</strong> <span id="review-learning-objective"></span></p>
-                <p><strong>Character Idea:</strong> <span id="review-character-description"></span></p>
-                <p><strong>Character Name:</strong> <span id="review-character-name"></span></p>
 
-                <div id="character-image-preview-container" style="margin-top: 15px; padding-top: 15px; border-top: 1px dashed #eee;">
-                    <h4>Character Preview:</h4>
-                    <p id="character-image-status" style="font-style: italic; color: #555;">Initializing...</p>
-                    <img id="character-image-preview" src="" alt="Character Preview" style="display: none; max-width: 150px; max-height:150px; object-fit: cover; border-radius: 5px; border: 1px solid #eee; margin-top: 5px;">
-                </div>
-                 <p><strong>Plot Idea:</strong> <span id="review-plot"></span></p>
-                <p><strong>Theme/Setting:</strong> <span id="review-theme"></span></p>
-                <p><strong>Keywords:</strong> <span id="review-keywords"></span></p>
+            <div id="book-loading-overlay" style="display: none; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(255,255,255,0.9); z-index: 10; text-align: center; padding-top: 50px; border-radius: var(--border-radius);">
+                <div class="spinner" style="margin-bottom: 20px; margin-left: auto; margin-right: auto;"></div>
+                <p id="book-loading-status" style="font-weight: bold; color: var(--primary-color);">Generating your book...</p>
+                <p id="book-loading-detail" style="font-size: 0.9em; color: #555;">This involves multiple steps and may take a minute or two.</p>
             </div>
-            <div class="generation-controls">
-                <p id="generation-status" aria-live="polite"></p>
-                <div class="navigation-buttons">
-                    <button type="button" class="back-button" onclick="goToStep(4)">&larr; Back</button>
-                    <button type="button" class="generate-button" id="btn-generate-story" onclick="generateStoryAndImage()">✨ Generate Story & Image ✨</button>
+
+            <div id="review-content">
+                <div id="review-details" class="review-box">
+                    <h3>Story Details:</h3>
+                    <p><strong>Child's Name:</strong> <span id="review-child-name"></span></p>
+                    <p><strong>Learning Goal:</strong> <span id="review-learning-objective"></span></p>
+                    <p><strong>Character Idea:</strong> <span id="review-character-description"></span></p>
+                    <p><strong>Character Name:</strong> <span id="review-character-name"></span></p>
+
+                    <div id="character-image-preview-container" style="margin-top: 15px; padding-top: 15px; border-top: 1px dashed #eee;">
+                        <h4>Character Preview:</h4>
+                        <p id="character-image-status" style="font-style: italic; color: #555;">Initializing...</p>
+                        <img id="character-image-preview" src="" alt="Character Preview" style="display: none; max-width: 150px; max-height:150px; object-fit: cover; border-radius: 5px; border: 1px solid #eee; margin-top: 5px;">
+                    </div>
+
+                    <p><strong>Plot Idea:</strong> <span id="review-plot"></span></p>
+                    <p><strong>Theme/Setting:</strong> <span id="review-theme"></span></p>
+                    <p><strong>Keywords:</strong> <span id="review-keywords"></span></p>
                 </div>
+                <div class="generation-controls">
+                     <p id="generation-status" aria-live="polite" style="display:none;"></p>
+                    <div class="navigation-buttons">
+                         <button type="button" class="back-button" onclick="goToStep(4)" id="btn-step-5-back">&larr; Back</button>
+                         <button type="button" class="generate-button" id="btn-generate-book" onclick="generateBook()">📚 Generate Book ✨</button>
+                    </div>
+                </div>
+                <p id="error-step-5" class="error-message" aria-live="assertive"></p>
             </div>
-            <p id="error-step-5" class="error-message" aria-live="assertive"></p>
         </section>
 
         <section id="step-6-display" class="step" aria-labelledby="step-6-heading">
-            <h2 id="step-6-heading">Your Personalized Story!</h2>
-            <div id="story-output">
-                <h3>Story for <span id="display-child-name"></span></h3>
-                <div id="story-image-container" aria-live="polite">
-                    <div class="spinner-container" id="image-spinner" style="display: none;">
-                        <div class="spinner"></div>
-                        <p>Generating image... this can take up to 30 seconds.</p>
+             <h2 id="step-6-heading">Your Story Book for <span id="display-child-name-book"></span>!</h2>
+
+            <div id="book-view" style="display: none;"> <div id="book-page">
+                     <div id="book-image-container">
+                        <img id="book-image" src="" alt="Story page image">
+                         <div id="book-image-spinner" class="spinner-container" style="display: none; position: absolute; top:0; left:0; right:0; bottom:0; background:rgba(255,255,255,0.8);"><div class="spinner"></div></div>
                     </div>
-                    <p id="image-status" class="loading-message" style="display: none;"></p>
-                    <img id="story-image" src="" alt="" style="display: none;">
+                     <div id="book-text-container">
+                        <p id="book-text"></p>
+                    </div>
                 </div>
-                <div id="story-text-container" aria-live="polite">
-                     <p id="story-text-status" class="loading-message">Loading story text...</p>
-                     <div id="story-text" class="story-content"></div>
+
+                 <div id="book-navigation">
+                    <button id="book-prev-button" onclick="changePage(-1)" disabled>&larr; Previous Page</button>
+                    <span id="book-page-indicator">Page X of Y</span>
+                    <button id="book-next-button" onclick="changePage(1)">Next Page &rarr;</button>
                 </div>
-                 <p id="error-step-6" class="error-message" aria-live="assertive"></p>
             </div>
-             <div class="navigation-buttons">
+
+             <div class="navigation-buttons" style="margin-top: 25px; justify-content: center;">
                  <button type="button" class="start-over-button" onclick="startOver()">Create Another Story</button>
              </div>
+             <p id="error-step-6" class="error-message" aria-live="assertive"></p>
         </section>
 
     </main>

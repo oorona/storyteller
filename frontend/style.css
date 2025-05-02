@@ -364,3 +364,93 @@ ul.suggestion-list li.selected {
 [aria-live="assertive"] {
     /* Indicate important updates (errors) */
 }
+
+/* ... (Keep all previous styles: general, steps, forms, buttons, suggestions, review, spinner, etc.) ... */
+
+/* --- Step 5 Loading Overlay --- */
+#book-loading-overlay {
+    /* Styles already set inline, but can refine here */
+    border-radius: var(--border-radius); /* Match parent */
+}
+#book-loading-overlay .spinner {
+    /* Use existing spinner style */
+    margin-left: auto;
+    margin-right: auto;
+}
+
+/* --- Step 6 Book View --- */
+#book-view {
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+    background-color: #fff;
+    padding: 20px;
+}
+
+#book-page {
+    /* Layout can be adjusted (e.g., side-by-side on wider screens) */
+}
+
+#book-image-container {
+    position: relative; /* For spinner positioning */
+    width: 100%;
+    max-width: 600px; /* Limit image width */
+    margin: 0 auto 20px auto; /* Center image */
+    min-height: 200px; /* Placeholder space */
+    background-color: #f0f0f0; /* BG while loading */
+    border-radius: 5px;
+    overflow: hidden; /* Ensure spinner stays within bounds */
+}
+
+#book-image {
+    display: block;
+    width: 100%;
+    height: auto;
+    object-fit: cover; /* Cover the container */
+}
+
+#book-image-spinner { /* Reuse spinner styles */
+   /* Styles set inline, potentially adjust here */
+}
+
+
+#book-text-container {
+    margin-top: 20px;
+    padding: 15px;
+    background-color: #fdfdfd;
+    border: 1px dashed #eee;
+    border-radius: 4px;
+    min-height: 100px;
+}
+
+#book-text {
+    white-space: pre-wrap; /* Preserve paragraph breaks */
+    font-size: 1.1rem;
+    line-height: 1.7;
+    color: #444;
+}
+
+#book-navigation {
+    margin-top: 25px;
+    padding-top: 15px;
+    border-top: 1px solid #eee;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+#book-page-indicator {
+    font-weight: bold;
+    color: #555;
+}
+
+#book-navigation button {
+    /* Use existing button styles */
+    padding: 10px 18px; /* Slightly smaller nav buttons */
+}
+
+#book-navigation button:disabled {
+    /* Existing disabled style */
+     background-color: #ccc;
+     cursor: not-allowed;
+}
