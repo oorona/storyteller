@@ -16,8 +16,16 @@ ai_story_generator/
 │       ├── plot_suggestions.txt
 │       ├── story_generation.txt
 │       ├── image_style.txt
-│       ├── story_sectioning_prompt.txt       # <-- NEW
-│       └── image_prompt_creation_prompt.txt  # <-- NEW
+│       ├── story_sectioning_prompt.txt       
+│       └── image_prompt_creation_prompt.txt  
+├── playground
+│   ├─ chat_assistant_app.py         
+│   ├─ character_image_assistant_app.py
+│   ├─ setup_env.sh                  
+│   ├─ run_chat.sh                   
+│   ├─ run_image.sh                 
+│   ├─ requirements.txt
+│   └─ README.md
 ├── frontend/
 │   ├── index.html         # Main HTML file
 │   ├── style.css          # CSS for styling
