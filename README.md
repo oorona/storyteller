@@ -165,6 +165,7 @@ Network topology:
 - `storyteller-frontend` joins both `internet` (external) and `intranet` networks
 - `storyteller-backend` joins only `intranet`
 - Frontend proxies `/api/*` to backend on the intranet network
+- `intranet` is a private bridge network (not `internal: true`) so backend can still reach external AI APIs
 
 ## API Endpoints
 

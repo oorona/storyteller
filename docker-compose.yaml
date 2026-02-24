@@ -47,7 +47,6 @@ networks:
     external: true
   intranet:
     name: storyteller-intranet
-    internal: true
 
 secrets:
   openai_api_key:
