@@ -18,6 +18,7 @@ Default provider is Gemini.
 - Added single-input child profile extraction (structured output) for Step 1
 - Added Docker-secrets-compatible key loading from `/run/secrets/...`
 - Added settings options endpoint: `GET /api/settings/options`
+- Added Traefik labels in Compose with required `TRAEFIK_DOMAIN` (from root `.env`)
 
 ## Project Structure
 
@@ -128,13 +129,19 @@ python app.py
 
 From repo root:
 
-1. Create a root `.env` (next to `docker-compose.yaml`) and define the Traefik domain:
+1. Create a root `.env` (next to `docker-compose.yaml`) from `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
+2. Set the Traefik domain in `.env`:
 
 ```dotenv
 TRAEFIK_DOMAIN=storyteller.home.iktdts.com
 ```
 
-2. Start the stack:
+3. Start the stack:
 
 ```bash
 docker compose up --build
@@ -142,6 +149,16 @@ docker compose up --build
 
 Then open:
 - `http://localhost:5001`
+
+## Traefik Routing
+
+`docker-compose.yaml` now includes Traefik labels for the `backend` service:
+- Router name: `storyteller`
+- Host rule: `Host(\`${TRAEFIK_DOMAIN}\`)`
+- Service port: `${PORT:-5001}`
+
+`TRAEFIK_DOMAIN` is required. If it is missing, Compose fails during interpolation with:
+- `TRAEFIK_DOMAIN must be set in .env`
 
 ## API Endpoints
 
