@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "main_characters": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 2,
+      "maxItems": 12
+    }
+  },
+  "required": ["main_characters"]
+}

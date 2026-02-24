@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "properties": {
+    "is_match": {"type": "boolean"},
+    "overall_score": {"type": "number"},
+    "plot_alignment_score": {"type": "number"},
+    "character_consistency_score": {"type": "number"},
+    "learning_goal_alignment_score": {"type": "number"},
+    "issues": {
+      "type": "array",
+      "items": {"type": "string"},
+      "maxItems": 12
+    },
+    "recommendation": {
+      "type": "string",
+      "enum": ["pass", "review", "fail"]
+    }
+  },
+  "required": [
+    "is_match",
+    "overall_score",
+    "plot_alignment_score",
+    "character_consistency_score",
+    "learning_goal_alignment_score",
+    "issues",
+    "recommendation"
+  ]
+}

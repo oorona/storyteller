@@ -1,6 +1,12 @@
-Suggest 3 simple plot ideas for a children's story.
-The story should focus on the learning objective: '{learning_objective}'.
-The main character is: '{character_description}'.
-The story's overall theme is: '{theme}'.
-Each plot idea should be a short paragraph (2-4 sentences) outlining a simple challenge and a positive resolution related to the learning objective.
-Format the output as a numbered list, with each plot starting on a new line after the number (e.g., '1. The character finds...') . Separate plots clearly.
+Generate simple plot options for a young child's story.
+
+Inputs:
+- Learning objective: {learning_objective}
+- Main character: {character_description}
+- Theme: {theme}
+
+Return JSON only, matching the schema.
+Field rules:
+- plots: 3 to 8 plot ideas.
+- Each plot should be 2 to 4 short sentences with a clear challenge and a positive resolution.
+- Keep the tone warm, gentle, and age-appropriate.

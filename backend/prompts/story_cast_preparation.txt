@@ -1,0 +1,21 @@
+Build a story character cast from a child's profile and selected character ideas.
+
+Inputs:
+- Child name (can be placeholder): {child_name}
+- Child profile text: {child_profile_text}
+- Learning objective: {learning_objective}
+- Theme: {theme}
+- Personality keywords: {personality_keywords_str}
+- Selected character ideas: {selected_character_ideas_str}
+
+Return JSON only, matching the schema.
+
+Rules:
+- child_character must represent the child in this story.
+- If child name is provided, use it for child_character.name; otherwise choose a fitting short name.
+- child_character.is_child must be true.
+- story_characters must contain 2 to 8 unique characters.
+- story_characters must include child_character and at least one character from selected ideas.
+- Keep each description short and concrete (8 to 22 words).
+- Use friendly, child-appropriate names and descriptions.
+- Do not include extra fields.

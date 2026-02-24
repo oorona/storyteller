@@ -1,0 +1,16 @@
+Identify the main characters for the selected story plan.
+
+Inputs:
+- Child name: {child_name}
+- Main chosen character name: {character_name}
+- Main chosen character description: {character_description}
+- Theme: {theme}
+- Learning objective: {learning_objective}
+- Selected plot: {plot_choice}
+
+Return JSON only, matching the schema.
+Field rules:
+- main_characters: 2 to 12 unique character entries.
+- Include the selected main character and any key supporting characters implied by the plot.
+- Each entry should be concise (name or short role phrase, up to 6 words).
+- Do not include explanations or extra fields.

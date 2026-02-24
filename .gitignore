@@ -136,6 +136,11 @@ ENV/
 env.bak/
 venv.bak/
 backend/.env
+secrets/*
+!secrets/.gitkeep
+!secrets/*.example
+backend/generated/profile_extractions/*
+!backend/generated/profile_extractions/.gitkeep
 
 # Spyder project settings
 .spyderproject
@@ -174,3 +179,5 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 playgorund/.venv
+backend/generated
+secrets/

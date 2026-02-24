@@ -10,6 +10,9 @@ services:
     # This is crucial for injecting the API key without baking it into the image.
     env_file:
       - ./backend/.env
+    environment:
+      OPENAI_API_KEY_FILE: /run/secrets/openai_api_key
+      GEMINI_API_KEY_FILE: /run/secrets/gemini_api_key
     ports:
       # Map host port 5001 to container port 5001 (or the value of $PORT if changed)
       - "${PORT:-5001}:${PORT:-5001}" # Uses host's PORT env var or defaults to 5001
@@ -17,13 +20,18 @@ services:
       # Optional: Mount the backend code for development (live reloading if Flask debug is on)
       # Comment out for production-like deployment where you rebuild the image for changes.
       - ./backend:/app/backend
+    secrets:
+      - openai_api_key
+      - gemini_api_key
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.storyteller.rule=Host(`${TRAEFIK_DOMAIN:?TRAEFIK_DOMAIN must be set in .env}`)"
+      - "traefik.http.routers.storyteller.service=storyteller"
+      - "traefik.http.services.storyteller.loadbalancer.server.port=${PORT:-5001}"
     restart: unless-stopped # Or 'always' depending on your needs
 
-# Optional: Define networks if needed for linking multiple services
-# networks:
-#   app_network:
-#     driver: bridge
-
-# Optional: Define volumes if needed for persistent data (not required for this app V1)
-# volumes:
-#   my_data:
+secrets:
+  openai_api_key:
+    file: ./secrets/openai_api_key
+  gemini_api_key:
+    file: ./secrets/gemini_api_key

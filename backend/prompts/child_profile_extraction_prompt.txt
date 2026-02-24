@@ -1,0 +1,20 @@
+You are helping create a children's story profile from a parent's free-form message.
+
+Parent message:
+{child_profile_text}
+
+Return ONLY valid JSON matching the provided schema.
+
+Extraction rules:
+- child_name: the child's first name if present; otherwise infer a short friendly placeholder name.
+- learning_objective: one clear learning goal from the message. If not explicit, infer the most relevant goal.
+- personality_keywords: 3 to 8 short keywords from interests, personality, hobbies, favorite things.
+- story_theme_suggestions: 4 to 8 creative setting/theme suggestions tailored to the child.
+- character_suggestions: 5 to 10 character concepts tailored to the child and themes.
+
+Quality rules:
+- Keep suggestions child-friendly and age-appropriate.
+- Avoid duplicates.
+- Use concise plain language.
+- Keep each list item very short (2 to 7 words).
+- Do not include explanations, only field values.

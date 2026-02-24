@@ -1,19 +1,18 @@
+Write a children's story for ages 4 to 7.
 
-Write a short, engaging children's story (around {story_word_count} words) suitable for a young child (approx age 4-7).
+Story inputs:
+- Target length: about {story_word_count} words
+- Child name: {child_name}
+- Main character: {character_name}
+- Character description: {character_description}
+- Theme: {theme}
+- Learning goal: {learning_objective}
+- Plot seed: {plot_choice}
+- Interests to weave in naturally: {personality_keywords_str}
 
-**Story Elements:**
-- **Audience:** A child named {child_name}.
-- **Main Character:** {character_name}, who is {character_description}.
-- **Theme:** {theme}.
-- **Learning Goal:** {learning_objective}.
-- **Basic Plot:** {plot_choice}
-- **Incorporate Interests:** The story should subtly reflect these interests/personality traits if possible: {personality_keywords_str}.
-
-**Instructions:**
-1.  **Narrative:** Tell the story following the basic plot. Make sure {character_name}'s actions and experiences help illustrate the learning goal ('{learning_objective}') in a positive, gentle way.
-2.  **Engagement:** Address the child reading the story ({child_name}) maybe once or twice naturally within the story (e.g., 'Just like you, {child_name}, {character_name} felt...' or 'Can you imagine that, {child_name}?').
-3.  **Tone:** Keep the language simple, upbeat, and age-appropriate. Use vivid but easy-to-understand descriptions.
-4.  **Structure:** Ensure a clear beginning (introducing {character_name} and the setting), a middle (the challenge/adventure related to the plot and learning goal), and a happy/satisfying ending.
-5.  **Focus:** The main focus should be the story itself, incorporating the elements smoothly, not just listing them.
-
-**Begin Story:**
+Return JSON only, matching the schema.
+Field rules:
+- story_text: one complete story with a clear beginning, middle, and happy ending.
+- Keep language simple and vivid.
+- Mention {child_name} naturally once or twice.
+- Keep the learning goal central through the character's actions.

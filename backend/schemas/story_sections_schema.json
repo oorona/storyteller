@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "sections": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 3,
+      "maxItems": 20
+    }
+  },
+  "required": ["sections"]
+}

@@ -1,0 +1,29 @@
+{
+  "type": "object",
+  "properties": {
+    "child_character": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "is_child": { "type": "boolean" }
+      },
+      "required": ["name", "description", "is_child"]
+    },
+    "story_characters": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "is_child": { "type": "boolean" }
+        },
+        "required": ["name", "description", "is_child"]
+      }
+    }
+  },
+  "required": ["child_character", "story_characters"]
+}

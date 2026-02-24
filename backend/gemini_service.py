@@ -4,11 +4,15 @@ import json
 import logging
 import os
 import re
+import tempfile
 from functools import lru_cache
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+import requests
 from dotenv import load_dotenv
-from openai import OpenAI
+from google import genai
+from google.genai import types
+from PIL import Image
 
 from profile_extraction_utils import (
     fallback_profile_from_text,
@@ -21,14 +25,17 @@ from secret_utils import read_secret
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 load_dotenv()
 
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
 CONFIG = {
     "api_key": read_secret(
-        "OPENAI_API_KEY",
-        "OPENAI_API_KEY_FILE",
-        "/run/secrets/openai_api_key",
+        "GEMINI_API_KEY",
+        "GEMINI_API_KEY_FILE",
+        "/run/secrets/gemini_api_key",
     ),
     "prompt_files": {
         "character": os.getenv("PROMPT_FILE_CHARACTER", "prompts/character_suggestions.txt"),
@@ -117,12 +124,13 @@ CONFIG = {
         ),
     },
     "models": {
-        "suggestions": os.getenv("TEXT_MODEL_SUGGESTIONS", "gpt-4.1-nano"),
-        "story": os.getenv("TEXT_MODEL_STORY", "gpt-4.1-mini"),
-        "sectioning": os.getenv("TEXT_MODEL_SECTIONING", "gpt-4.1-nano"),
-        "img_prompt": os.getenv("TEXT_MODEL_IMG_PROMPT", "gpt-4.1-nano"),
-        "image_gen": os.getenv("IMAGE_MODEL", "gpt-image-1"),
-        "image_edit": os.getenv("IMAGE_EDIT_MODEL", "gpt-image-1"),
+        "suggestions": os.getenv("GEMINI_TEXT_MODEL", "gemini-3-flash-preview"),
+        "story": os.getenv("GEMINI_TEXT_MODEL", "gemini-3-flash-preview"),
+        "sectioning": os.getenv("GEMINI_TEXT_MODEL", "gemini-3-flash-preview"),
+        "img_prompt": os.getenv("GEMINI_TEXT_MODEL", "gemini-3-flash-preview"),
+        "structured_fallback": os.getenv("GEMINI_STRUCTURED_FALLBACK_MODEL", "gemini-3-flash-preview"),
+        "image_gen": os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image"),
+        "image_edit": os.getenv("GEMINI_IMAGE_EDIT_MODEL", "gemini-2.5-flash-image"),
     },
     "max_tokens": {
         "character": int(os.getenv("MAX_TOKENS_CHARACTER", 240)),
@@ -153,32 +161,33 @@ CONFIG = {
         "book_match_validation": float(os.getenv("TEMPERATURE_BOOK_MATCH_VALIDATION", 0.1)),
     },
     "image": {
-        "size": os.getenv("IMAGE_SIZE", "1024x1024"),
-        "quality": os.getenv("IMAGE_QUALITY", "low"),
-        "output_format": os.getenv("OUTPUT_FORMAT", "png"),
-    },
-    "image_edit": {
-        "size": os.getenv("IMAGE_EDIT_SIZE", os.getenv("IMAGE_SIZE", "1024x1024")),
-        "quality": os.getenv("IMAGE_EDIT_QUALITY", os.getenv("IMAGE_QUALITY", "low")),
+        "aspect_ratio": os.getenv("GEMINI_IMAGE_ASPECT_RATIO", "1:1"),
+        "image_size": os.getenv("GEMINI_IMAGE_SIZE", "1K"),
     },
     "story": {
         "word_count": int(os.getenv("STORY_TARGET_WORD_COUNT", 400)),
     },
 }
 
-client: Optional[OpenAI] = None
 if CONFIG["api_key"]:
-    try:
-        client = OpenAI(api_key=CONFIG["api_key"])
-        logger.info("OpenAI client initialized successfully.")
-    except Exception as exc:
-        logger.error(f"Failed to initialize OpenAI client: {exc}")
+    logger.info("Gemini API key loaded.")
 else:
-    logger.warning("OpenAI API key not found. OpenAI functionality disabled.")
+    logger.warning("Gemini API key not found. Gemini functionality disabled.")
+
+_genai_client: Optional[Any] = None
 
 
 def is_client_ready() -> bool:
-    return client is not None
+    return bool(CONFIG["api_key"])
+
+
+def _get_genai_client():
+    global _genai_client
+    if not is_client_ready():
+        raise RuntimeError("Gemini client not ready.")
+    if _genai_client is None:
+        _genai_client = genai.Client(api_key=CONFIG["api_key"])
+    return _genai_client
 
 
 @lru_cache(maxsize=16)
@@ -190,8 +199,8 @@ def load_prompt_template(prompt_type: str) -> Optional[str]:
 
     base_dir = os.path.dirname(__file__)
     preferred_path = os.path.join(base_dir, filename)
-
     filepath = preferred_path if os.path.exists(preferred_path) else filename
+
     if not os.path.exists(filepath):
         logger.error(f"Prompt file not found: {preferred_path}")
         return None
@@ -211,6 +220,178 @@ def load_schema(schema_type: str) -> Optional[Dict[str, Any]]:
         logger.error(f"Schema path not configured for type: {schema_type}")
         return None
     return load_json_config_file(filename)
+
+
+def format_prompt(template: str, data: Dict[str, Any]) -> str:
+    try:
+        return template.format(**data)
+    except KeyError as exc:
+        raise ValueError(f"Prompt template error: missing key {exc}") from exc
+    except Exception as exc:
+        raise ValueError(f"Prompt template formatting error: {exc}") from exc
+
+
+def _runtime_value(runtime_settings: Optional[Dict[str, Any]], key: str, default: Any) -> Any:
+    if not isinstance(runtime_settings, dict):
+        return default
+    value = runtime_settings.get(key)
+    return default if value in (None, "") else value
+
+
+def _runtime_float(runtime_settings: Optional[Dict[str, Any]], key: str, default: float) -> float:
+    value = _runtime_value(runtime_settings, key, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _runtime_int(runtime_settings: Optional[Dict[str, Any]], key: str, default: int) -> int:
+    value = _runtime_value(runtime_settings, key, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _profile_max_tokens(runtime_settings: Optional[Dict[str, Any]], default: int = 1200) -> int:
+    env_default = int(os.getenv("PROFILE_MAX_TOKENS", str(default)))
+    return _runtime_int(runtime_settings, "profile_max_tokens", env_default)
+
+
+def _text_model(runtime_settings: Optional[Dict[str, Any]], task_model_key: str) -> str:
+    return str(
+        _runtime_value(
+            runtime_settings,
+            "text_model",
+            CONFIG["models"][task_model_key],
+        )
+    )
+
+
+def _temperature(runtime_settings: Optional[Dict[str, Any]], task_temp_key: str) -> float:
+    return _runtime_float(runtime_settings, "text_temperature", CONFIG["temperature"][task_temp_key])
+
+
+def _extract_error_message(response_json: Dict[str, Any], status_code: int) -> str:
+    error_obj = response_json.get("error", {})
+    if isinstance(error_obj, dict):
+        message = error_obj.get("message")
+        if message:
+            return str(message)
+    return f"Gemini API request failed with status {status_code}."
+
+
+def _generate_content(
+    model: str,
+    parts: List[Dict[str, Any]],
+    temperature: Optional[float] = None,
+    max_output_tokens: Optional[int] = None,
+    system_instruction: Optional[str] = None,
+    response_modalities: Optional[List[str]] = None,
+    image_config: Optional[Dict[str, Any]] = None,
+    response_mime_type: Optional[str] = None,
+    response_json_schema: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if not is_client_ready():
+        raise RuntimeError("Gemini client not ready.")
+
+    payload: Dict[str, Any] = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": parts,
+            }
+        ]
+    }
+
+    if system_instruction:
+        payload["systemInstruction"] = {
+            "parts": [{"text": system_instruction}],
+        }
+
+    generation_config: Dict[str, Any] = {}
+    if temperature is not None:
+        generation_config["temperature"] = float(temperature)
+    if max_output_tokens is not None:
+        generation_config["maxOutputTokens"] = int(max_output_tokens)
+    generation_config["candidateCount"] = 1
+    if response_modalities:
+        generation_config["responseModalities"] = response_modalities
+    if image_config:
+        generation_config["imageConfig"] = image_config
+    if response_mime_type:
+        generation_config["responseMimeType"] = response_mime_type
+    if response_json_schema:
+        generation_config["responseJsonSchema"] = response_json_schema
+        model_name = (model or "").strip().lower()
+        if "2.5-flash" in model_name:
+            generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+    if generation_config:
+        payload["generationConfig"] = generation_config
+
+    endpoint = f"{GEMINI_API_BASE}/models/{model}:generateContent"
+    response = requests.post(
+        endpoint,
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": CONFIG["api_key"],
+        },
+        json=payload,
+        timeout=180,
+    )
+
+    try:
+        response_json = response.json()
+    except ValueError:
+        response_json = {}
+
+    if response.status_code >= 400:
+        message = _extract_error_message(response_json, response.status_code)
+        raise RuntimeError(message)
+
+    return response_json
+
+
+def _iter_candidate_parts(response_json: Dict[str, Any]):
+    for candidate in response_json.get("candidates", []):
+        content = candidate.get("content", {})
+        for part in content.get("parts", []):
+            yield part
+
+
+def _candidate_texts(response_json: Dict[str, Any]) -> List[str]:
+    texts: List[str] = []
+    for candidate in response_json.get("candidates", []):
+        content = candidate.get("content", {})
+        parts = content.get("parts", [])
+        chunks: List[str] = []
+        for part in parts:
+            text = part.get("text")
+            if isinstance(text, str):
+                chunks.append(text)
+        combined = "".join(chunks).strip()
+        if combined:
+            texts.append(combined)
+    return texts
+
+
+def _extract_text(response_json: Dict[str, Any]) -> str:
+    texts = _candidate_texts(response_json)
+    return texts[0] if texts else ""
+
+
+def _extract_image(response_json: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    for part in _iter_candidate_parts(response_json):
+        inline_data = part.get("inlineData") or part.get("inline_data")
+        if not isinstance(inline_data, dict):
+            continue
+
+        data = inline_data.get("data")
+        mime_type = inline_data.get("mimeType") or inline_data.get("mime_type") or "image/png"
+        if isinstance(data, str) and data.strip():
+            return data, str(mime_type)
+    return None
 
 
 def _strip_code_fences(text: str) -> str:
@@ -279,6 +460,83 @@ def _parse_json_object_from_text(raw_text: str) -> Dict[str, Any]:
             return parsed
 
     raise ValueError("Could not parse a valid JSON object from model output.")
+
+
+def _coerce_parsed_object(payload: Any) -> Optional[Dict[str, Any]]:
+    if payload is None:
+        return None
+    if isinstance(payload, dict):
+        return payload
+    if hasattr(payload, "model_dump"):
+        try:
+            dumped = payload.model_dump()
+            if isinstance(dumped, dict):
+                return dumped
+        except Exception:
+            pass
+    if hasattr(payload, "dict"):
+        try:
+            dumped = payload.dict()
+            if isinstance(dumped, dict):
+                return dumped
+        except Exception:
+            pass
+    if isinstance(payload, str):
+        try:
+            parsed = json.loads(payload)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return None
+    return None
+
+
+def _sdk_structured_generate(
+    *,
+    model: str,
+    prompt_text: str,
+    system_instruction: str,
+    schema: Dict[str, Any],
+) -> Dict[str, Any]:
+    client = _get_genai_client()
+    # For gemini-3-flash-preview structured output, keep config minimal per docs.
+    # Adding extra generation params can cause the SDK to return plain text wrappers.
+    config: Dict[str, Any] = {
+        "response_mime_type": "application/json",
+        "response_json_schema": schema,
+    }
+    full_prompt = prompt_text
+    if system_instruction:
+        full_prompt = f"{system_instruction.strip()}\n\n{prompt_text}"
+
+    response = client.models.generate_content(
+        model=model,
+        contents=full_prompt,
+        config=config,
+    )
+
+    parsed_payload = getattr(response, "parsed", None)
+    parsed_object = _coerce_parsed_object(parsed_payload)
+    if parsed_object is not None:
+        return parsed_object
+
+    response_text = str(getattr(response, "text", "") or "").strip()
+    if not response_text:
+        raise ValueError("Gemini SDK structured output missing parsed payload and text.")
+
+    try:
+        strict_parsed = json.loads(response_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Gemini SDK response.text was not valid JSON: {exc}. sample={response_text[:220]!r}"
+        ) from exc
+
+    if not isinstance(strict_parsed, dict):
+        raise ValueError(
+            "Gemini SDK response.text parsed as JSON but not an object."
+            f" type={type(strict_parsed).__name__}"
+        )
+    return strict_parsed
 
 
 def _sanitize_string(value: Any, fallback: str = "") -> str:
@@ -393,121 +651,64 @@ def _name_from_character_idea(idea: str, fallback_index: int) -> str:
     return " ".join(token.capitalize() for token in tokens[:2])
 
 
-def format_prompt(template: str, data: Dict[str, Any]) -> str:
-    try:
-        return template.format(**data)
-    except KeyError as exc:
-        raise ValueError(f"Prompt template error: missing key {exc}") from exc
-    except Exception as exc:
-        raise ValueError(f"Prompt template formatting error: {exc}") from exc
-
-
-def _runtime_value(runtime_settings: Optional[Dict[str, Any]], key: str, default: Any) -> Any:
-    if not isinstance(runtime_settings, dict):
-        return default
-    value = runtime_settings.get(key)
-    return default if value in (None, "") else value
-
-
-def _runtime_float(runtime_settings: Optional[Dict[str, Any]], key: str, default: float) -> float:
-    value = _runtime_value(runtime_settings, key, default)
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _runtime_int(runtime_settings: Optional[Dict[str, Any]], key: str, default: int) -> int:
-    value = _runtime_value(runtime_settings, key, default)
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _profile_max_tokens(runtime_settings: Optional[Dict[str, Any]], default: int = 1200) -> int:
-    env_default = int(os.getenv("PROFILE_MAX_TOKENS", str(default)))
-    return _runtime_int(runtime_settings, "profile_max_tokens", env_default)
-
-
-def _text_model(runtime_settings: Optional[Dict[str, Any]], task_model_key: str) -> str:
-    return str(
-        _runtime_value(
-            runtime_settings,
-            "text_model",
-            CONFIG["models"][task_model_key],
-        )
-    )
-
-
-def _temperature(runtime_settings: Optional[Dict[str, Any]], task_temp_key: str) -> float:
-    return _runtime_float(runtime_settings, "text_temperature", CONFIG["temperature"][task_temp_key])
-
-
-def _structured_chat_object(
+def _generate_structured_object(
     *,
     runtime_settings: Optional[Dict[str, Any]],
-    task_model_key: str,
-    task_temp_key: str,
-    max_tokens: int,
+    model_key: str,
     schema_key: str,
-    schema_name: str,
-    system_text: str,
-    user_prompt: str,
+    system_instruction: str,
+    prompt_text: str,
 ) -> Dict[str, Any]:
-    if not is_client_ready():
-        raise RuntimeError("OpenAI client not ready.")
-
     schema = load_schema(schema_key)
     if not schema:
         raise RuntimeError(f"Schema not found for {schema_key}.")
 
-    model = _text_model(runtime_settings, task_model_key)
-    temperature = _temperature(runtime_settings, task_temp_key)
-    max_token_value = _runtime_int(runtime_settings, "text_max_tokens", max_tokens)
+    selected_model = _text_model(runtime_settings, model_key)
+    fallback_model = str(CONFIG["models"].get("structured_fallback", "")).strip()
+    models_to_try: List[str] = [selected_model]
+    if fallback_model and fallback_model not in models_to_try:
+        models_to_try.append(fallback_model)
 
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_text},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=max_token_value,
-            temperature=temperature,
-            n=1,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": schema_name,
-                    "schema": schema,
-                    "strict": True,
-                },
-            },
-        )
-        raw_output = (response.choices[0].message.content or "").strip()
-        return _parse_json_object_from_text(raw_output)
-    except Exception:
-        fallback_response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "Return strict JSON only."},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=max_token_value,
-            temperature=0.0,
-            n=1,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": schema_name,
-                    "schema": schema,
-                    "strict": True,
-                },
-            },
-        )
-        fallback_output = (fallback_response.choices[0].message.content or "").strip()
-        return _parse_json_object_from_text(fallback_output)
+    # For SDK structured output calls we intentionally avoid extra generation params
+    # because gemini-3-flash-preview can drop schema mode when they are set.
+
+    parse_errors: List[str] = []
+    for model in models_to_try:
+        attempts: List[Dict[str, Any]] = []
+        try:
+            attempts.append(
+                _sdk_structured_generate(
+                    model=model,
+                    prompt_text=prompt_text,
+                    system_instruction=system_instruction,
+                    schema=schema,
+                )
+            )
+        except Exception as exc:
+            parse_errors.append(f"model={model}: request failed: {exc}")
+
+        try:
+            attempts.append(
+                _sdk_structured_generate(
+                    model=model,
+                    prompt_text=(
+                        f"{prompt_text}\n\n"
+                        "Return only one valid JSON object matching the schema."
+                    ),
+                    system_instruction="Return strict JSON only.",
+                    schema=schema,
+                )
+            )
+        except Exception as exc:
+            parse_errors.append(f"model={model}: strict retry failed: {exc}")
+
+        for parsed_object in attempts:
+            if isinstance(parsed_object, dict):
+                return parsed_object
+
+    error_summary = " | ".join(parse_errors[:4]) if parse_errors else "Unknown parse error."
+    logger.warning(f"Gemini structured output parse failed [{schema_key}]: {error_summary}")
+    raise ValueError(f"Could not parse a valid JSON object from model output. {error_summary}")
 
 
 def extract_child_profile(
@@ -515,37 +716,31 @@ def extract_child_profile(
     runtime_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not is_client_ready():
-        return {"error": "OpenAI client not ready.", "error_code": "service_unavailable"}
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
 
     template = load_prompt_template("child_profile_extraction")
     if not template:
         return {"error": "Could not load child profile extraction prompt template."}
 
+    prompt = ""
     try:
         prompt = format_prompt(template, {"child_profile_text": child_profile_text})
-    except ValueError as exc:
-        return {"error": str(exc)}
-
-    try:
-        parsed_output = _structured_chat_object(
+        parsed_output = _generate_structured_object(
             runtime_settings=runtime_settings,
-            task_model_key="suggestions",
-            task_temp_key="character",
-            max_tokens=_profile_max_tokens(runtime_settings, 1200),
+            model_key="suggestions",
             schema_key="child_profile_extraction",
-            schema_name="child_profile_extraction",
-            system_text="You extract structured child story profile data as strict JSON.",
-            user_prompt=prompt,
+            system_instruction="You extract structured child story profile data as strict JSON.",
+            prompt_text=prompt,
         )
         normalized = normalize_child_profile(parsed_output)
-        persist_profile_extraction("openai", prompt, normalized, json.dumps(parsed_output))
+        persist_profile_extraction("gemini", prompt, normalized, json.dumps(parsed_output))
         return normalized
     except Exception as exc:
-        logger.error(f"Error extracting child profile: {exc}")
+        logger.warning(f"Primary Gemini structured extraction failed: {exc}")
         fallback = fallback_profile_from_text(child_profile_text)
         persist_profile_extraction(
-            "openai",
-            prompt,
+            "gemini",
+            prompt or child_profile_text,
             fallback,
             f"FALLBACK_USED: {exc}",
         )
@@ -560,7 +755,7 @@ def get_character_suggestions(
     runtime_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not is_client_ready():
-        return {"error": "OpenAI client not ready.", "error_code": "service_unavailable"}
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
 
     template = load_prompt_template("character")
     if not template:
@@ -577,20 +772,17 @@ def get_character_suggestions(
                 else "not specified",
             },
         )
-        parsed_output = _structured_chat_object(
+        parsed_output = _generate_structured_object(
             runtime_settings=runtime_settings,
-            task_model_key="suggestions",
-            task_temp_key="character",
-            max_tokens=CONFIG["max_tokens"]["character"],
+            model_key="suggestions",
             schema_key="character_suggestions",
-            schema_name="character_suggestions",
-            system_text="Generate child-friendly character suggestions in structured JSON.",
-            user_prompt=prompt,
+            system_instruction="Generate child-friendly character suggestions in structured JSON.",
+            prompt_text=prompt,
         )
         suggestions = _sanitize_string_list(parsed_output.get("suggestions"))
         return {"suggestions": suggestions if suggestions else ["No suggestions generated."]}
     except Exception as exc:
-        logger.error(f"Error generating character suggestions: {exc}")
+        logger.error(f"Error generating Gemini character suggestions: {exc}")
         return {"error": f"Error generating suggestions: {exc}"}
 
 
@@ -600,7 +792,7 @@ def get_name_suggestions(
     runtime_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not is_client_ready():
-        return {"error": "OpenAI client not ready.", "error_code": "service_unavailable"}
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
 
     template = load_prompt_template("name")
     if not template:
@@ -614,20 +806,17 @@ def get_name_suggestions(
                 "theme": theme,
             },
         )
-        parsed_output = _structured_chat_object(
+        parsed_output = _generate_structured_object(
             runtime_settings=runtime_settings,
-            task_model_key="suggestions",
-            task_temp_key="name",
-            max_tokens=CONFIG["max_tokens"]["name"],
+            model_key="suggestions",
             schema_key="name_suggestions",
-            schema_name="name_suggestions",
-            system_text="Generate character name suggestions in structured JSON.",
-            user_prompt=prompt,
+            system_instruction="Generate character name suggestions in structured JSON.",
+            prompt_text=prompt,
         )
         names = _sanitize_string_list(parsed_output.get("names"), allow_comma_split=True)
         return {"names": names if names else ["No names generated."]}
     except Exception as exc:
-        logger.error(f"Error generating name suggestions: {exc}")
+        logger.error(f"Error generating Gemini name suggestions: {exc}")
         return {"error": f"Error generating names: {exc}"}
 
 
@@ -638,7 +827,7 @@ def get_plot_suggestions(
     runtime_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not is_client_ready():
-        return {"error": "OpenAI client not ready.", "error_code": "service_unavailable"}
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
 
     template = load_prompt_template("plot")
     if not template:
@@ -653,20 +842,17 @@ def get_plot_suggestions(
                 "theme": theme,
             },
         )
-        parsed_output = _structured_chat_object(
+        parsed_output = _generate_structured_object(
             runtime_settings=runtime_settings,
-            task_model_key="suggestions",
-            task_temp_key="plot",
-            max_tokens=CONFIG["max_tokens"]["plot"],
+            model_key="suggestions",
             schema_key="plot_suggestions",
-            schema_name="plot_suggestions",
-            system_text="Generate plot ideas in structured JSON.",
-            user_prompt=prompt,
+            system_instruction="Generate plot ideas in structured JSON.",
+            prompt_text=prompt,
         )
         parsed = _sanitize_string_list(parsed_output.get("plots"))
         return {"plots": parsed if parsed else ["No plot ideas generated."]}
     except Exception as exc:
-        logger.error(f"Error generating plot suggestions: {exc}")
+        logger.error(f"Error generating Gemini plot suggestions: {exc}")
         return {"error": f"Error generating plot ideas: {exc}"}
 
 
@@ -680,7 +866,7 @@ def get_main_story_characters(
     runtime_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not is_client_ready():
-        return {"error": "OpenAI client not ready.", "error_code": "service_unavailable"}
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
 
     template = load_prompt_template("main_story_characters")
     if not template:
@@ -698,20 +884,17 @@ def get_main_story_characters(
                 "theme": theme,
             },
         )
-        parsed_output = _structured_chat_object(
+        parsed_output = _generate_structured_object(
             runtime_settings=runtime_settings,
-            task_model_key="suggestions",
-            task_temp_key="main_story_characters",
-            max_tokens=CONFIG["max_tokens"]["main_story_characters"],
+            model_key="suggestions",
             schema_key="main_story_characters",
-            schema_name="main_story_characters",
-            system_text="Extract the main story characters and return structured JSON.",
-            user_prompt=prompt,
+            system_instruction="Extract the main story characters and return structured JSON.",
+            prompt_text=prompt,
         )
         characters = _sanitize_string_list(parsed_output.get("main_characters"))
         return {"main_characters": characters if characters else ["No main characters identified."]}
     except Exception as exc:
-        logger.error(f"Error extracting main story characters: {exc}")
+        logger.error(f"Error extracting Gemini main story characters: {exc}")
         return {"error": f"Error extracting main story characters: {exc}"}
 
 
@@ -725,7 +908,7 @@ def prepare_story_cast(
     runtime_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not is_client_ready():
-        return {"error": "OpenAI client not ready.", "error_code": "service_unavailable"}
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
 
     template = load_prompt_template("story_cast_preparation")
     if not template:
@@ -747,15 +930,12 @@ def prepare_story_cast(
                 "selected_character_ideas_str": json.dumps(selected_character_ideas, ensure_ascii=False),
             },
         )
-        parsed_output = _structured_chat_object(
+        parsed_output = _generate_structured_object(
             runtime_settings=runtime_settings,
-            task_model_key="suggestions",
-            task_temp_key="story_cast",
-            max_tokens=CONFIG["max_tokens"]["story_cast"],
+            model_key="suggestions",
             schema_key="story_cast",
-            schema_name="story_cast",
-            system_text="Build a coherent child-friendly story cast in strict JSON.",
-            user_prompt=prompt,
+            system_instruction="Build a coherent child-friendly story cast in strict JSON.",
+            prompt_text=prompt,
         )
 
         child = parsed_output.get("child_character")
@@ -806,7 +986,7 @@ def prepare_story_cast(
 
         return {"child_character": child_character, "story_characters": story_characters[:8]}
     except Exception as exc:
-        logger.error(f"Error preparing story cast: {exc}")
+        logger.error(f"Error preparing Gemini story cast: {exc}")
         return {"error": f"Error preparing story cast: {exc}"}
 
 
@@ -817,7 +997,7 @@ def get_plot_suggestions_from_cast(
     runtime_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not is_client_ready():
-        return {"error": "OpenAI client not ready.", "error_code": "service_unavailable"}
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
 
     template = load_prompt_template("plot_from_cast")
     if not template:
@@ -836,20 +1016,17 @@ def get_plot_suggestions_from_cast(
                 "story_characters_json": json.dumps(characters, ensure_ascii=False),
             },
         )
-        parsed_output = _structured_chat_object(
+        parsed_output = _generate_structured_object(
             runtime_settings=runtime_settings,
-            task_model_key="suggestions",
-            task_temp_key="plot_from_cast",
-            max_tokens=CONFIG["max_tokens"]["plot_from_cast"],
+            model_key="suggestions",
             schema_key="plot_suggestions",
-            schema_name="plot_suggestions",
-            system_text="Generate cast-based plot options in strict JSON.",
-            user_prompt=prompt,
+            system_instruction="Generate cast-based plot options in strict JSON.",
+            prompt_text=prompt,
         )
         plots = _sanitize_string_list(parsed_output.get("plots"))
         return {"plots": plots if plots else ["No plot ideas generated."]}
     except Exception as exc:
-        logger.error(f"Error generating cast-based plot suggestions: {exc}")
+        logger.error(f"Error generating Gemini cast-based plot suggestions: {exc}")
         return {"error": f"Error generating plot ideas: {exc}"}
 
 
@@ -859,7 +1036,7 @@ def identify_section_characters(
     runtime_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not is_client_ready():
-        return {"error": "OpenAI client not ready.", "error_code": "service_unavailable"}
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
 
     template = load_prompt_template("section_characters")
     if not template:
@@ -877,15 +1054,12 @@ def identify_section_characters(
                 "story_characters_json": json.dumps(characters, ensure_ascii=False),
             },
         )
-        parsed_output = _structured_chat_object(
+        parsed_output = _generate_structured_object(
             runtime_settings=runtime_settings,
-            task_model_key="sectioning",
-            task_temp_key="section_characters",
-            max_tokens=CONFIG["max_tokens"]["section_characters"],
+            model_key="sectioning",
             schema_key="page_characters",
-            schema_name="page_characters",
-            system_text="Identify which listed characters appear in the section and return strict JSON.",
-            user_prompt=prompt,
+            system_instruction="Identify which listed characters appear in the section and return strict JSON.",
+            prompt_text=prompt,
         )
 
         requested_names = _sanitize_string_list(parsed_output.get("character_names"))
@@ -902,7 +1076,7 @@ def identify_section_characters(
                 selected_names.append(characters[1]["name"])
         return {"character_names": selected_names[:6]}
     except Exception as exc:
-        logger.error(f"Error identifying section characters: {exc}")
+        logger.error(f"Error identifying Gemini section characters: {exc}")
         return {"error": f"Error identifying section characters: {exc}"}
 
 
@@ -913,7 +1087,7 @@ def create_image_prompt_for_section_with_characters(
     runtime_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not is_client_ready():
-        return {"error": "OpenAI client not ready.", "error_code": "service_unavailable"}
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
 
     template = load_prompt_template("image_prompt_with_characters")
     if not template:
@@ -932,22 +1106,19 @@ def create_image_prompt_for_section_with_characters(
                 "involved_characters_json": json.dumps(characters, ensure_ascii=False),
             },
         )
-        parsed_output = _structured_chat_object(
+        parsed_output = _generate_structured_object(
             runtime_settings=runtime_settings,
-            task_model_key="img_prompt",
-            task_temp_key="img_prompt_with_characters",
-            max_tokens=CONFIG["max_tokens"]["img_prompt_with_characters"],
+            model_key="img_prompt",
             schema_key="image_prompt",
-            schema_name="image_prompt",
-            system_text="Return one concise section image prompt in strict JSON.",
-            user_prompt=prompt,
+            system_instruction="Return one concise section image prompt in strict JSON.",
+            prompt_text=prompt,
         )
         image_prompt_text = _sanitize_string(parsed_output.get("image_prompt"))
         if not image_prompt_text:
             return {"error": "AI failed to generate a non-empty image prompt."}
         return {"image_prompt": image_prompt_text}
     except Exception as exc:
-        logger.error(f"Error creating image prompt with characters: {exc}")
+        logger.error(f"Error creating Gemini image prompt with characters: {exc}")
         return {"error": f"Error creating image prompt: {exc}"}
 
 
@@ -961,7 +1132,7 @@ def validate_book_match(
     runtime_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not is_client_ready():
-        return {"error": "OpenAI client not ready.", "error_code": "service_unavailable"}
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
 
     template = load_prompt_template("book_match_validation")
     if not template:
@@ -994,21 +1165,17 @@ def validate_book_match(
                 "pages_json": json.dumps(safe_pages, ensure_ascii=False),
             },
         )
-        parsed_output = _structured_chat_object(
+        parsed_output = _generate_structured_object(
             runtime_settings=runtime_settings,
-            task_model_key="sectioning",
-            task_temp_key="book_match_validation",
-            max_tokens=CONFIG["max_tokens"]["book_match_validation"],
+            model_key="sectioning",
             schema_key="book_match_validation",
-            schema_name="book_match_validation",
-            system_text="Evaluate semantic alignment and return strict JSON only.",
-            user_prompt=prompt,
+            system_instruction="Evaluate semantic alignment and return strict JSON only.",
+            prompt_text=prompt,
         )
 
         recommendation = _sanitize_string(parsed_output.get("recommendation")).lower()
         normalized_recommendation = recommendation if recommendation in {"pass", "review", "fail"} else "review"
         issues = _sanitize_string_list(parsed_output.get("issues"), fallback=[])
-
         result = {
             "is_match": bool(parsed_output.get("is_match", False)),
             "overall_score": float(parsed_output.get("overall_score", 0.0)),
@@ -1018,12 +1185,11 @@ def validate_book_match(
             "issues": issues,
             "recommendation": normalized_recommendation,
         }
-
         if result["recommendation"] == "pass":
             result["is_match"] = True
         return result
     except Exception as exc:
-        logger.error(f"Error validating book match: {exc}")
+        logger.error(f"Error validating Gemini book match: {exc}")
         return {"error": f"Error validating book match: {exc}"}
 
 
@@ -1038,7 +1204,7 @@ def generate_story(
     runtime_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not is_client_ready():
-        return {"error": "OpenAI client not ready.", "error_code": "service_unavailable"}
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
 
     template = load_prompt_template("story")
     if not template:
@@ -1060,15 +1226,12 @@ def generate_story(
                 else "not specified",
             },
         )
-        parsed_output = _structured_chat_object(
+        parsed_output = _generate_structured_object(
             runtime_settings=runtime_settings,
-            task_model_key="story",
-            task_temp_key="story",
-            max_tokens=CONFIG["max_tokens"]["story"],
+            model_key="story",
             schema_key="story_text",
-            schema_name="story_text",
-            system_text="Write a complete story and return it in structured JSON.",
-            user_prompt=prompt,
+            system_instruction="Write a complete story and return it in structured JSON.",
+            prompt_text=prompt,
         )
         story_text = _sanitize_string(parsed_output.get("story_text"))
         if len(story_text) < 50:
@@ -1078,7 +1241,7 @@ def generate_story(
             }
         return {"story_text": story_text}
     except Exception as exc:
-        logger.error(f"Error generating story: {exc}")
+        logger.error(f"Error generating Gemini story: {exc}")
         return {"error": f"Oops! Error generating the story: {exc}"}
 
 
@@ -1087,7 +1250,7 @@ def get_story_sections(
     runtime_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not is_client_ready():
-        return {"error": "OpenAI client not ready.", "error_code": "service_unavailable"}
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
 
     template = load_prompt_template("story_sectioning")
     if not template:
@@ -1095,22 +1258,19 @@ def get_story_sections(
 
     try:
         prompt = format_prompt(template, {"full_story_text": full_story_text})
-        parsed_output = _structured_chat_object(
+        parsed_output = _generate_structured_object(
             runtime_settings=runtime_settings,
-            task_model_key="sectioning",
-            task_temp_key="sectioning",
-            max_tokens=CONFIG["max_tokens"]["sectioning"],
+            model_key="sectioning",
             schema_key="story_sections",
-            schema_name="story_sections",
-            system_text="Split the story into ordered sections and return structured JSON.",
-            user_prompt=prompt,
+            system_instruction="Split the story into ordered sections and return structured JSON.",
+            prompt_text=prompt,
         )
         sections = _sanitize_string_list(parsed_output.get("sections"))
         if not sections:
             return {"error": "Failed to parse sections."}
         return {"sections": sections}
     except Exception as exc:
-        logger.error(f"Error sectioning story: {exc}")
+        logger.error(f"Error sectioning Gemini story: {exc}")
         return {"error": f"Error sectioning story: {exc}"}
 
 
@@ -1121,7 +1281,7 @@ def create_image_prompt_for_section(
     runtime_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not is_client_ready():
-        return {"error": "OpenAI client not ready.", "error_code": "service_unavailable"}
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
 
     template = load_prompt_template("image_prompt_creation")
     if not template:
@@ -1136,75 +1296,46 @@ def create_image_prompt_for_section(
                 "character_description": character_description,
             },
         )
-        parsed_output = _structured_chat_object(
+        parsed_output = _generate_structured_object(
             runtime_settings=runtime_settings,
-            task_model_key="img_prompt",
-            task_temp_key="img_prompt",
-            max_tokens=CONFIG["max_tokens"]["img_prompt"],
+            model_key="img_prompt",
             schema_key="image_prompt",
-            schema_name="image_prompt",
-            system_text="Return one concise image prompt in structured JSON.",
-            user_prompt=prompt,
+            system_instruction="Return one concise image prompt in structured JSON.",
+            prompt_text=prompt,
         )
         image_prompt_text = _sanitize_string(parsed_output.get("image_prompt"))
         if not image_prompt_text:
             return {"error": "AI failed to generate a non-empty image prompt."}
         return {"image_prompt": image_prompt_text}
     except Exception as exc:
-        logger.error(f"Error creating image prompt: {exc}")
+        logger.error(f"Error creating Gemini image prompt: {exc}")
         return {"error": f"Error creating image prompt: {exc}"}
 
 
-def _image_mime_type_from_format(output_format: str) -> str:
-    lowered = (output_format or "png").lower()
-    if lowered in {"jpg", "jpeg"}:
-        return "image/jpeg"
-    if lowered == "webp":
-        return "image/webp"
-    return "image/png"
+def _supports_image_size(model_name: str) -> bool:
+    return "gemini-3-pro-image-preview" in model_name
 
 
-def _map_image_error(exc: Exception, prefix: str = "generate") -> Dict[str, Any]:
-    error_text = str(exc).lower()
-    error_code = "generic_error" if prefix == "generate" else "generic_edit_error"
-    user_message = "Failed to generate image: An unexpected error occurred."
-    if prefix != "generate":
-        user_message = "Failed to edit image: An unexpected error occurred."
-
-    if "content policy" in error_text or "safety system" in error_text:
-        error_code = "content_policy_error"
-        user_message = (
-            "Image generation failed due to content policy."
-            if prefix == "generate"
-            else "Image editing failed due to content policy."
+def _gemini_image_config(runtime_settings: Optional[Dict[str, Any]], model_name: str) -> Dict[str, Any]:
+    aspect_ratio = str(
+        _runtime_value(
+            runtime_settings,
+            "gemini_aspect_ratio",
+            CONFIG["image"]["aspect_ratio"],
         )
-    elif "billing" in error_text or "quota" in error_text:
-        error_code = "billing_error"
-        user_message = (
-            "Image generation failed due to account limits."
-            if prefix == "generate"
-            else "Image editing failed due to account limits."
+    )
+    image_size = str(
+        _runtime_value(
+            runtime_settings,
+            "gemini_image_size",
+            CONFIG["image"]["image_size"],
         )
-    elif "authentication" in error_text or "api key" in error_text:
-        error_code = "auth_error"
-        user_message = (
-            "Image generation failed due to authentication error."
-            if prefix == "generate"
-            else "Image editing failed due to authentication error."
-        )
-    elif "invalid_request_error" in error_text:
-        error_code = "invalid_request"
-        user_message = (
-            f"Image generation failed: Invalid request ({exc})"
-            if prefix == "generate"
-            else f"Image editing failed: Invalid request ({exc})"
-        )
+    )
 
-    if "image must be square" in error_text:
-        error_code = "image_format_error"
-        user_message = "Image editing failed: Base image must be square for the selected model."
-
-    return {"error": user_message, "error_code": error_code}
+    config: Dict[str, Any] = {"aspectRatio": aspect_ratio}
+    if _supports_image_size(model_name):
+        config["imageSize"] = image_size
+    return config
 
 
 def generate_image(
@@ -1212,44 +1343,37 @@ def generate_image(
     runtime_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not is_client_ready():
-        return {"error": "OpenAI client not ready.", "error_code": "service_unavailable"}
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
 
     style_prompt_template = load_prompt_template("image_style")
     style_prompt = style_prompt_template.strip() if style_prompt_template else ""
     full_prompt = f"{description}. {style_prompt}".strip()
 
     model = str(_runtime_value(runtime_settings, "image_model", CONFIG["models"]["image_gen"]))
-    size = str(_runtime_value(runtime_settings, "image_size", CONFIG["image"]["size"]))
-    quality = str(_runtime_value(runtime_settings, "image_quality", CONFIG["image"]["quality"]))
-    output_format = str(
-        _runtime_value(
-            runtime_settings,
-            "image_output_format",
-            CONFIG["image"]["output_format"],
-        )
-    )
 
     try:
-        response = client.images.generate(
+        response_json = _generate_content(
             model=model,
-            prompt=full_prompt,
-            size=size,
-            quality=quality,
-            output_format=output_format,
-            n=1,
+            parts=[{"text": full_prompt}],
+            response_modalities=["IMAGE"],
+            image_config=_gemini_image_config(runtime_settings, model),
+            temperature=_runtime_float(runtime_settings, "image_temperature", 1.0),
+            max_output_tokens=256,
         )
+        image_payload = _extract_image(response_json)
+        if not image_payload:
+            return {"error": "Gemini image API did not return image data.", "error_code": "invalid_response"}
 
-        if response.data and response.data[0].b64_json:
-            revised_prompt = getattr(response.data[0], "revised_prompt", "")
-            return {
-                "b64_json": response.data[0].b64_json,
-                "revised_prompt": revised_prompt,
-                "mime_type": _image_mime_type_from_format(output_format),
-            }
-        return {"error": "Invalid response from image API.", "error_code": "invalid_response"}
+        b64_data, mime_type = image_payload
+        revised_prompt = _extract_text(response_json)
+        return {
+            "b64_json": b64_data,
+            "revised_prompt": revised_prompt,
+            "mime_type": mime_type,
+        }
     except Exception as exc:
-        logger.error(f"Error calling OpenAI image generate: {exc}")
-        return _map_image_error(exc, prefix="generate")
+        logger.error(f"Error generating Gemini image: {exc}")
+        return {"error": f"Failed to generate image: {exc}", "error_code": "generic_error"}
 
 
 def generate_image_with_references(
@@ -1257,20 +1381,124 @@ def generate_image_with_references(
     reference_images: List[Dict[str, Any]],
     runtime_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    # OpenAI image generation in this project does not support passing multiple reference images
-    # in the same path used for Gemini. We preserve behavior by enriching the prompt with
-    # referenced character names and generating a new image.
-    reference_names = []
-    for item in reference_images or []:
-        if isinstance(item, dict):
-            name = _sanitize_string(item.get("name"))
-            if name and name not in reference_names:
-                reference_names.append(name)
+    if not is_client_ready():
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
 
-    enriched_prompt = description
-    if reference_names:
-        enriched_prompt = f"{description}. Characters to include: {', '.join(reference_names)}."
-    return generate_image(enriched_prompt, runtime_settings=runtime_settings)
+    if not reference_images:
+        return generate_image(description, runtime_settings=runtime_settings)
+
+    style_prompt_template = load_prompt_template("image_style")
+    style_prompt = style_prompt_template.strip() if style_prompt_template else ""
+    full_prompt = f"{description}. {style_prompt}".strip()
+
+    model = str(_runtime_value(runtime_settings, "image_model", CONFIG["models"]["image_gen"]))
+    if "pro-image-preview" not in model:
+        model = "gemini-3-pro-image-preview"
+    aspect_ratio = str(_runtime_value(runtime_settings, "gemini_aspect_ratio", CONFIG["image"]["aspect_ratio"]))
+    image_size = str(_runtime_value(runtime_settings, "gemini_image_size", CONFIG["image"]["image_size"]))
+
+    contents: List[Any] = [full_prompt]
+    used_reference_names: List[str] = []
+    for reference in reference_images[:6]:
+        if not isinstance(reference, dict):
+            continue
+        b64_data = _sanitize_string(reference.get("b64_json"))
+        if not b64_data:
+            continue
+        if "," in b64_data and b64_data.lower().startswith("data:"):
+            b64_data = b64_data.split(",", 1)[1]
+        try:
+            raw_bytes = base64.b64decode(b64_data)
+            image_obj = Image.open(io.BytesIO(raw_bytes))
+            if image_obj.mode not in ("RGB", "L"):
+                image_obj = image_obj.convert("RGB")
+            contents.append(image_obj)
+            name = _sanitize_string(reference.get("name"))
+            if name:
+                used_reference_names.append(name)
+        except Exception as exc:
+            logger.warning(f"Skipping invalid reference image for Gemini generation: {exc}")
+
+    if len(contents) <= 1:
+        return generate_image(description, runtime_settings=runtime_settings)
+
+    image_config_kwargs: Dict[str, Any] = {"aspect_ratio": aspect_ratio}
+    if _supports_image_size(model):
+        image_config_kwargs["image_size"] = image_size
+
+    config = types.GenerateContentConfig(
+        response_modalities=["TEXT", "IMAGE"],
+        image_config=types.ImageConfig(**image_config_kwargs),
+    )
+
+    try:
+        client = _get_genai_client()
+        response = client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=config,
+        )
+
+        revised_prompt_parts: List[str] = []
+        output_b64 = ""
+        output_mime = "image/png"
+
+        for part in getattr(response, "parts", []) or []:
+            text_part = getattr(part, "text", None)
+            if text_part:
+                revised_prompt_parts.append(str(text_part))
+
+            inline_data = getattr(part, "inline_data", None)
+            if inline_data is not None:
+                raw_data = getattr(inline_data, "data", None)
+                mime_type = str(getattr(inline_data, "mime_type", "") or "image/png")
+                if raw_data:
+                    if isinstance(raw_data, bytes):
+                        output_b64 = base64.b64encode(raw_data).decode("utf-8")
+                    elif isinstance(raw_data, str):
+                        # Gemini SDK commonly returns base64 string here.
+                        output_b64 = raw_data
+                    else:
+                        output_b64 = base64.b64encode(bytes(raw_data)).decode("utf-8")
+                    output_mime = mime_type
+                    break
+
+            image_obj = None
+            try:
+                image_obj = part.as_image() if hasattr(part, "as_image") else None
+            except Exception:
+                image_obj = None
+
+            if image_obj is not None:
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
+                    tmp_path = tmp_file.name
+                try:
+                    image_obj.save(tmp_path)
+                    with open(tmp_path, "rb") as image_file:
+                        output_b64 = base64.b64encode(image_file.read()).decode("utf-8")
+                    output_mime = "image/png"
+                finally:
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+                break
+
+        if not output_b64:
+            return {
+                "error": "Gemini image API did not return image data.",
+                "error_code": "invalid_response",
+            }
+
+        return {
+            "b64_json": output_b64,
+            "mime_type": output_mime,
+            "revised_prompt": " ".join(revised_prompt_parts).strip(),
+            "reference_names": used_reference_names,
+        }
+    except Exception as exc:
+        logger.error(f"Error generating Gemini image with references: {exc}")
+        return {"error": f"Failed to generate image: {exc}", "error_code": "generic_error"}
 
 
 def edit_image_based_on_prompt(
@@ -1279,55 +1507,39 @@ def edit_image_based_on_prompt(
     runtime_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not is_client_ready():
-        return {"error": "OpenAI client not ready.", "error_code": "service_unavailable"}
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
     if not base_image_b64:
         return {"error": "Base image data is missing.", "error_code": "missing_base_image"}
 
-    model = str(_runtime_value(runtime_settings, "image_edit_model", CONFIG["models"]["image_edit"]))
-    size = str(
-        _runtime_value(
-            runtime_settings,
-            "image_edit_size",
-            CONFIG["image_edit"]["size"],
-        )
-    )
-    quality = str(
-        _runtime_value(
-            runtime_settings,
-            "image_edit_quality",
-            CONFIG["image_edit"]["quality"],
-        )
-    )
     style_prompt_template = load_prompt_template("image_style")
     style_prompt = style_prompt_template.strip() if style_prompt_template else ""
     full_prompt = f"{edit_prompt}. {style_prompt}".strip()
 
-    try:
-        image_bytes = base64.b64decode(base_image_b64)
-        image_file = io.BytesIO(image_bytes)
-        image_file.name = "base_image.png"
-    except Exception:
-        return {"error": "Invalid base image data provided.", "error_code": "decode_error"}
+    model = str(_runtime_value(runtime_settings, "image_edit_model", CONFIG["models"]["image_edit"]))
 
     try:
-        response = client.images.edit(
+        response_json = _generate_content(
             model=model,
-            image=image_file,
-            prompt=full_prompt,
-            size=size,
-            quality=quality,
-            n=1,
+            parts=[
+                {"text": full_prompt},
+                {
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": base_image_b64,
+                    }
+                },
+            ],
+            response_modalities=["IMAGE"],
+            image_config=_gemini_image_config(runtime_settings, model),
+            temperature=_runtime_float(runtime_settings, "image_temperature", 1.0),
+            max_output_tokens=256,
         )
+        image_payload = _extract_image(response_json)
+        if not image_payload:
+            return {"error": "Gemini image edit API did not return image data.", "error_code": "invalid_response"}
 
-        if response.data and response.data[0].b64_json:
-            return {
-                "b64_json": response.data[0].b64_json,
-                "mime_type": "image/png",
-            }
-        return {
-            "error": "Invalid response format from image edit API.",
-            "error_code": "invalid_response",
-        }
+        b64_data, mime_type = image_payload
+        return {"b64_json": b64_data, "mime_type": mime_type}
     except Exception as exc:
-        logger.error(f"Error calling OpenAI image edit: {exc}")
-        return _map_image_error(exc, prefix="edit")
+        logger.error(f"Error editing Gemini image: {exc}")
+        return {"error": f"Failed to edit image: {exc}", "error_code": "generic_edit_error"}

@@ -1,0 +1,15 @@
+Identify which characters appear in this story section.
+
+Story section:
+{story_section_text}
+
+Available story characters (JSON):
+{story_characters_json}
+
+Return JSON only, matching the schema.
+
+Rules:
+- character_names must only contain names from the available story characters list.
+- Include only characters clearly present in the section.
+- Return 1 to 6 character names.
+- Do not include extra fields.

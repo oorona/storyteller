@@ -1,15 +1,19 @@
 Create one concise image prompt for this story section.
 
 Return JSON only, matching the schema.
+
 Field rules:
-- image_prompt: max 25 words.
+- image_prompt: max 35 words.
 - Focus on the most visual moment in this section.
-- Include character action, setting, and key objects or mood.
+- Include action, setting, and mood.
+- Mention only the involved characters by name.
 - Do not include style tags like "children's book illustration".
 
 STORY SECTION TEXT:
 {story_section_text}
 
-CHARACTER INFO:
-Name: {character_name}
-Description: {character_description}
+THEME:
+{theme}
+
+INVOLVED CHARACTERS (JSON):
+{involved_characters_json}

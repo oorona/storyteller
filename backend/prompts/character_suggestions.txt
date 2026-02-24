@@ -1,9 +1,12 @@
-Suggest 3 diverse and creative character ideas for a children's story.
-The story's theme is '{theme}'.
-The desired character type is '{type}'.
-Keywords describing the child's personality/interests: {personality_keywords_str}.
-Provide only a brief description for each character idea (1-2 sentences), suitable for a child.
-Format the output as a numbered list, each item on a new line. Example:
-1. A brave little squirrel who loves acorns and adventures.
-2. A friendly robot who learns about feelings.
-3. A magical paintbrush that brings drawings to life.
+Generate child-friendly character descriptions for a story.
+
+Inputs:
+- Theme: {theme}
+- Character type preference: {type}
+- Child personality/interests: {personality_keywords_str}
+
+Return JSON only, matching the schema.
+Field rules:
+- suggestions: 3 to 12 short character ideas.
+- Each idea should be one concise sentence and easy for a young child to understand.
+- Avoid duplicates and avoid markdown.

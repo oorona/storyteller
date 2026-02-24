@@ -15,57 +15,136 @@
     <main id="app-container">
         <section id="step-1-basics" class="step active" aria-labelledby="step-1-heading">
             <h2 id="step-1-heading">Step 1: Tell Us About Your Child</h2>
-            <form id="form-basics">
-                <div>
-                    <label for="child-name">Child's First Name:</label>
-                    <input type="text" id="child-name" name="child_name" required aria-required="true">
-                </div>
-                 <div>
-                    <label for="learning-objective">Learning Goal or Theme (e.g., sharing, being brave, counting to 5):</label>
-                    <input type="text" id="learning-objective" name="learning_objective" required aria-required="true">
-                 </div>
-                <div>
-                    <label for="personality-keywords">Child's Interests/Personality (Keywords separated by commas, e.g., dinosaurs, loves singing, very curious):</label>
-                    <input type="text" id="personality-keywords" name="personality_keywords" required aria-required="true" placeholder="e.g., cats, space, funny">
-                </div>
-                 <div>
-                    <label for="story-theme">Overall Story Setting/Theme (e.g., magical forest, outer space, animal kingdom):</label>
-                    <input type="text" id="story-theme" name="story_theme" required aria-required="true" placeholder="e.g., underwater adventure">
-                 </div>
-                 <div>
-                    <label for="character-type">Main Character Type (e.g., friendly animal, helpful robot, magical creature):</label>
-                    <input type="text" id="character-type" name="character_type" required aria-required="true" placeholder="e.g., talking bear">
-                 </div>
+            <form id="form-basics" class="step1-layout">
+                <aside id="ai-settings-panel" class="ai-settings-panel step1-sidebar">
+                    <h3>Model Settings</h3>
+                    <div class="settings-grid">
+                        <div>
+                            <label for="provider-select">Provider</label>
+                            <select id="provider-select" name="provider" required aria-required="true">
+                                <option value="openai">OpenAI</option>
+                                <option value="gemini">Google Gemini</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="text-model-select">Text Model</label>
+                            <select id="text-model-select" name="text_model" required aria-required="true"></select>
+                        </div>
+                        <div>
+                            <label for="text-temperature-input">Text Temperature</label>
+                            <input type="number" id="text-temperature-input" name="text_temperature" min="0" max="2" step="0.1" value="0.7">
+                        </div>
+                        <div>
+                            <label for="image-model-select">Image Model (Generate)</label>
+                            <select id="image-model-select" name="image_model" required aria-required="true"></select>
+                        </div>
+                        <div>
+                            <label for="image-edit-model-select">Image Model (Edit)</label>
+                            <select id="image-edit-model-select" name="image_edit_model" required aria-required="true"></select>
+                        </div>
+                    </div>
 
-                 <div class="navigation-buttons">
-                     <button type="button" class="next-button" onclick="goToStep(2)">Next: Character Ideas &rarr;</button>
-                 </div>
-                 <p id="error-step-1" class="error-message" aria-live="assertive"></p>
+                    <div id="openai-settings" class="provider-settings">
+                        <h4>OpenAI Image</h4>
+                        <div class="settings-grid">
+                            <div>
+                                <label for="openai-image-size-select">Size (Generate)</label>
+                                <select id="openai-image-size-select" name="image_size"></select>
+                            </div>
+                            <div>
+                                <label for="openai-image-edit-size-select">Size (Edit)</label>
+                                <select id="openai-image-edit-size-select" name="image_edit_size"></select>
+                            </div>
+                            <div>
+                                <label for="openai-image-quality-select">Quality (Generate)</label>
+                                <select id="openai-image-quality-select" name="image_quality"></select>
+                            </div>
+                            <div>
+                                <label for="openai-image-edit-quality-select">Quality (Edit)</label>
+                                <select id="openai-image-edit-quality-select" name="image_edit_quality"></select>
+                            </div>
+                            <div>
+                                <label for="openai-image-format-select">Output Format</label>
+                                <select id="openai-image-format-select" name="image_output_format"></select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="gemini-settings" class="provider-settings">
+                        <h4>Gemini Image</h4>
+                        <div class="settings-grid">
+                            <div>
+                                <label for="gemini-aspect-ratio-select">Aspect Ratio</label>
+                                <select id="gemini-aspect-ratio-select" name="gemini_aspect_ratio"></select>
+                            </div>
+                            <div>
+                                <label for="gemini-image-size-select">Resolution</label>
+                                <select id="gemini-image-size-select" name="gemini_image_size"></select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <p id="settings-status" class="loading-message" style="padding: 6px 0 0 0; text-align: left; margin: 0;"></p>
+                </aside>
+
+                <div class="step1-main">
+                    <div class="step1-main-box">
+                        <p class="step1-kicker">Story Assistant</p>
+                        <h3 class="step1-title">Tell me about your child</h3>
+                        <p class="step1-subtitle">Share what they like, their name (if you want), and what they need to learn.</p>
+
+                        <div>
+                            <label for="child-profile-input">Child Profile Input</label>
+                            <textarea id="child-profile-input" name="child_profile_input" rows="7" required aria-required="true" placeholder="Example: My daughter Mia loves dinosaurs, drawing, and ocean animals. She gets shy in new groups, so I want her to learn confidence and making friends."></textarea>
+                        </div>
+
+                        <div id="profile-extraction-summary" class="selection-display" style="display: none;">
+                            <p><strong>Extracted Name:</strong> <span id="extracted-child-name">-</span></p>
+                            <p><strong>Extracted Learning Goal:</strong> <span id="extracted-learning-goal">-</span></p>
+                            <p><strong>Extracted Interests:</strong> <span id="extracted-interests">-</span></p>
+                        </div>
+
+                        <div class="navigation-buttons step1-actions">
+                            <button type="button" class="next-button" onclick="goToStep(2)">Next: Themes & Characters &rarr;</button>
+                        </div>
+                        <p id="error-step-1" class="error-message" aria-live="assertive"></p>
+                    </div>
+                </div>
             </form>
         </section>
 
         <section id="step-2-character" class="step" aria-labelledby="step-2-heading">
-            <h2 id="step-2-heading">Step 2: Choose a Character Idea</h2>
+            <h2 id="step-2-heading">Step 2: Choose Theme and Characters</h2>
+            <h3 class="suggestion-group-title">Theme Options</h3>
+            <div id="theme-suggestions" class="suggestions-container" aria-live="polite">
+                <p class="loading-message">Loading story themes...</p>
+            </div>
+            <div id="theme-selection" class="selection-display">
+                <p>Selected Theme: <strong id="selected-theme-text">None</strong></p>
+            </div>
+            <h3 class="suggestion-group-title">Character Idea Options</h3>
             <div id="character-suggestions" class="suggestions-container" aria-live="polite">
                 <p class="loading-message">Loading character ideas...</p>
             </div>
             <div id="character-selection" class="selection-display">
-                 <p>Selected Character Idea: <strong id="selected-character-text">None</strong></p>
+                 <p>Selected Characters: <strong id="selected-character-text">None</strong></p>
             </div>
              <div class="navigation-buttons">
                 <button type="button" class="back-button" onclick="goToStep(1)">&larr; Back</button>
-                <button type="button" class="next-button" onclick="goToStep(3)" id="btn-step-2-next" disabled>Next: Name Ideas &rarr;</button>
+                <button type="button" class="next-button" onclick="goToStep(3)" id="btn-step-2-next" disabled>Next: Build Story Cast &rarr;</button>
             </div>
             <p id="error-step-2" class="error-message" aria-live="assertive"></p>
         </section>
 
         <section id="step-3-name" class="step" aria-labelledby="step-3-heading">
-            <h2 id="step-3-heading">Step 3: Choose a Name for Your Character</h2>
+            <h2 id="step-3-heading">Step 3: Confirm Story Cast</h2>
+            <h3 class="suggestion-group-title">Generated Cast</h3>
             <div id="name-suggestions" class="suggestions-container" aria-live="polite">
-                <p class="loading-message">Loading name ideas...</p>
+                <p id="story-cast-status" class="loading-message">Preparing cast...</p>
+                <ul id="story-cast-list" class="suggestion-list"></ul>
             </div>
              <div id="name-selection" class="selection-display">
-                 <p>Selected Name: <strong id="selected-name-text">None</strong></p>
+                 <p>Child Character: <strong id="selected-name-text">None</strong></p>
             </div>
              <div class="navigation-buttons">
                 <button type="button" class="back-button" onclick="goToStep(2)">&larr; Back</button>
@@ -76,6 +155,7 @@
 
         <section id="step-4-plot" class="step" aria-labelledby="step-4-heading">
             <h2 id="step-4-heading">Step 4: Choose a Plot Idea</h2>
+            <h3 class="suggestion-group-title">Plot Options</h3>
             <div id="plot-suggestions" class="suggestions-container" aria-live="polite">
                  <p class="loading-message">Loading plot ideas...</p>
             </div>
@@ -92,10 +172,22 @@
         <section id="step-5-review" class="step" aria-labelledby="step-5-heading">
             <h2 id="step-5-heading">Step 5: Review Your Choices</h2>
 
-            <div id="book-loading-overlay" style="display: none; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(255,255,255,0.9); z-index: 10; text-align: center; padding-top: 50px; border-radius: var(--border-radius);">
-                <div class="spinner" style="margin-bottom: 20px; margin-left: auto; margin-right: auto;"></div>
-                <p id="book-loading-status" style="font-weight: bold; color: var(--primary-color);">Generating your book...</p>
-                <p id="book-loading-detail" style="font-size: 0.9em; color: #555;">This involves multiple steps and may take a minute or two.</p>
+            <div id="book-loading-overlay" class="book-loading-overlay" aria-live="polite" aria-busy="true">
+                <div class="book-loading-card">
+                    <div class="spinner"></div>
+                    <p id="book-loading-status" class="book-loading-status">Generating your book...</p>
+                    <p id="book-loading-detail" class="book-loading-detail">This involves multiple steps and may take a minute or two.</p>
+                    <div class="book-loading-meta">
+                        <span id="book-loading-elapsed">Elapsed: 0s</span>
+                        <span id="book-loading-pulse">Working.</span>
+                    </div>
+                    <ul id="book-loading-steps" class="book-loading-steps">
+                        <li data-step="story" class="is-active">Compose story text</li>
+                        <li data-step="sections">Split story into pages</li>
+                        <li data-step="images">Generate illustrations</li>
+                        <li data-step="finalize">Finalize your book</li>
+                    </ul>
+                </div>
             </div>
 
             <div id="review-content">
@@ -105,6 +197,9 @@
                     <p><strong>Learning Goal:</strong> <span id="review-learning-objective"></span></p>
                     <p><strong>Character Idea:</strong> <span id="review-character-description"></span></p>
                     <p><strong>Character Name:</strong> <span id="review-character-name"></span></p>
+                    <p><strong>AI Provider:</strong> <span id="review-ai-provider"></span></p>
+                    <p><strong>Text Model:</strong> <span id="review-text-model"></span></p>
+                    <p><strong>Image Models:</strong> <span id="review-image-models"></span></p>
 
                     <div id="character-image-preview-container" style="margin-top: 15px; padding-top: 15px; border-top: 1px dashed #eee;">
                         <h4>Character Preview:</h4>
@@ -113,6 +208,11 @@
                     </div>
 
                     <p><strong>Plot Idea:</strong> <span id="review-plot"></span></p>
+                    <div class="review-main-characters-block">
+                        <strong>Main Characters:</strong>
+                        <p id="review-main-characters-status" class="review-inline-status"></p>
+                        <ul id="review-main-characters" class="review-chip-list"></ul>
+                    </div>
                     <p><strong>Theme/Setting:</strong> <span id="review-theme"></span></p>
                     <p><strong>Keywords:</strong> <span id="review-keywords"></span></p>
                 </div>
@@ -147,7 +247,8 @@
                 </div>
             </div>
 
-             <div class="navigation-buttons" style="margin-top: 25px; justify-content: center;">
+             <div class="navigation-buttons" style="margin-top: 25px; justify-content: center; gap: 12px;">
+                 <button type="button" class="next-button" id="btn-download-pdf" onclick="downloadBookPdf()" disabled>Download PDF</button>
                  <button type="button" class="start-over-button" onclick="startOver()">Create Another Story</button>
              </div>
              <p id="error-step-6" class="error-message" aria-live="assertive"></p>

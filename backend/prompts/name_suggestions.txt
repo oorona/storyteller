@@ -1,5 +1,11 @@
-Suggest 5 creative and fitting names for a children's story character.
-Character Description: '{character_description}'.
-Story Theme: '{theme}'.
-The names should be easy for a child to read and remember.
-Provide only the names, separated by commas. Example: Sparky, Bolt, Zippy, Whiz, Gadget
+Generate fitting child-friendly names for a story character.
+
+Inputs:
+- Character description: {character_description}
+- Story theme: {theme}
+
+Return JSON only, matching the schema.
+Field rules:
+- names: 3 to 10 unique names.
+- Keep names short, easy to read, and memorable.
+- Do not include explanations or extra fields.

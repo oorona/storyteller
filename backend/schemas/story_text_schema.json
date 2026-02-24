@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "story_text": {
+      "type": "string"
+    }
+  },
+  "required": ["story_text"]
+}

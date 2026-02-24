@@ -1,0 +1,14 @@
+Generate simple plot options for a young child's story using the full cast.
+
+Inputs:
+- Learning objective: {learning_objective}
+- Theme: {theme}
+- Story characters (JSON): {story_characters_json}
+
+Return JSON only, matching the schema.
+
+Field rules:
+- plots: 3 to 8 plot ideas.
+- Each plot should be 2 to 4 short sentences.
+- Include the child character and at least one other cast character in each plot.
+- Keep the tone warm, gentle, and age-appropriate.

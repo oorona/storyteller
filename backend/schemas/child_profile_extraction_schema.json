@@ -1,0 +1,42 @@
+{
+  "type": "object",
+  "properties": {
+    "child_name": {
+      "type": "string"
+    },
+    "learning_objective": {
+      "type": "string"
+    },
+    "personality_keywords": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 3,
+      "maxItems": 8
+    },
+    "story_theme_suggestions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 4,
+      "maxItems": 8
+    },
+    "character_suggestions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 5,
+      "maxItems": 10
+    }
+  },
+  "required": [
+    "child_name",
+    "learning_objective",
+    "personality_keywords",
+    "story_theme_suggestions",
+    "character_suggestions"
+  ]
+}

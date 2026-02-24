@@ -1,0 +1,27 @@
+Evaluate whether the generated book matches the selected plot, cast, and learning goal.
+
+Inputs:
+- Child name: {child_name}
+- Learning objective: {learning_objective}
+- Theme: {theme}
+- Selected plot: {selected_plot}
+- Story characters (JSON): {story_characters_json}
+- Book pages (JSON): {pages_json}
+
+Return JSON only, matching the schema.
+
+Scoring rules:
+- overall_score: 0-100, holistic fit.
+- plot_alignment_score: 0-100, how well events align with selected plot.
+- character_consistency_score: 0-100, character presence/behavior consistency.
+- learning_goal_alignment_score: 0-100, evidence of learning objective.
+
+Pass/fail guidance:
+- recommendation = "pass" when overall_score >= 70 and no major contradictions.
+- recommendation = "review" when partially aligned.
+- recommendation = "fail" when major mismatch with plot/cast/goal.
+
+Output rules:
+- issues: concise list of specific problems; empty list if none.
+- is_match should be true only when recommendation is "pass".
+- Do not add extra fields.
