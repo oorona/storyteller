@@ -1,34 +1,53 @@
 services:
-  backend:
+  storyteller-backend:
     build:
-      context: . # Use the current directory as the build context
-      dockerfile: Dockerfile # Specify the Dockerfile name
-      args: # Optional: Pass build-time arguments to Dockerfile
-        - PORT=5001 # Matches default in Dockerfile and app
-    container_name: ai_story_generator_backend
-    # Load environment variables directly from the .env file located in ./backend
-    # This is crucial for injecting the API key without baking it into the image.
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - PORT=5001
+    container_name: storyteller-backend
     env_file:
       - ./backend/.env
     environment:
       OPENAI_API_KEY_FILE: /run/secrets/openai_api_key
       GEMINI_API_KEY_FILE: /run/secrets/gemini_api_key
-    ports:
-      # Map host port 5001 to container port 5001 (or the value of $PORT if changed)
-      - "${PORT:-5001}:${PORT:-5001}" # Uses host's PORT env var or defaults to 5001
+      PORT: 5001
     volumes:
-      # Optional: Mount the backend code for development (live reloading if Flask debug is on)
-      # Comment out for production-like deployment where you rebuild the image for changes.
       - ./backend:/app/backend
     secrets:
       - openai_api_key
       - gemini_api_key
+    networks:
+      - intranet
+    restart: unless-stopped
+
+  storyteller-frontend:
+    image: nginx:1.27-alpine
+    container_name: storyteller-frontend
+    depends_on:
+      - storyteller-backend
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=internet"
       - "traefik.http.routers.storyteller.rule=Host(`${TRAEFIK_DOMAIN:?TRAEFIK_DOMAIN must be set in .env}`)"
+      - "traefik.http.routers.storyteller.entrypoints=web"
+      - "traefik.http.routers.storyteller.tls=false"
       - "traefik.http.routers.storyteller.service=storyteller"
-      - "traefik.http.services.storyteller.loadbalancer.server.port=${PORT:-5001}"
-    restart: unless-stopped # Or 'always' depending on your needs
+      - "traefik.http.services.storyteller.loadbalancer.server.port=80"
+    networks:
+      - internet
+      - intranet
+    restart: unless-stopped
+
+networks:
+  internet:
+    external: true
+  intranet:
+    name: storyteller-intranet
+    internal: true
 
 secrets:
   openai_api_key:

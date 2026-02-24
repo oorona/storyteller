@@ -18,7 +18,8 @@ Default provider is Gemini.
 - Added single-input child profile extraction (structured output) for Step 1
 - Added Docker-secrets-compatible key loading from `/run/secrets/...`
 - Added settings options endpoint: `GET /api/settings/options`
-- Added Traefik labels in Compose with required `TRAEFIK_DOMAIN` (from root `.env`)
+- Split containers into `storyteller-frontend` and `storyteller-backend`
+- Added Traefik labels on frontend with env-driven router rules (no hardcoded domain)
 
 ## Project Structure
 
@@ -36,6 +37,7 @@ storyteller/
 │   └── schemas/
 ├── frontend/
 │   ├── index.html
+│   ├── nginx.conf
 │   ├── script.js
 │   └── style.css
 ├── secrets/
@@ -138,7 +140,7 @@ cp .env.example .env
 2. Set the Traefik domain in `.env`:
 
 ```dotenv
-TRAEFIK_DOMAIN=storyteller.home.iktdts.com
+TRAEFIK_DOMAIN=storyteller.example.com
 ```
 
 3. Start the stack:
@@ -147,18 +149,22 @@ TRAEFIK_DOMAIN=storyteller.home.iktdts.com
 docker compose up --build
 ```
 
-Then open:
-- `http://localhost:5001`
+Then open using that domain through Traefik.
 
 ## Traefik Routing
 
-`docker-compose.yaml` now includes Traefik labels for the `backend` service:
+`docker-compose.yaml` includes Traefik labels for the `storyteller-frontend` service:
 - Router name: `storyteller`
-- Host rule: `Host(\`${TRAEFIK_DOMAIN}\`)`
-- Service port: `${PORT:-5001}`
+- Router rule: `Host(\`${TRAEFIK_DOMAIN}\`)`
+- Entrypoint: `web`
+- TLS: `false`
+- Service port: `80` (frontend nginx)
+- Docker network hint: `traefik.docker.network=internet`
 
-`TRAEFIK_DOMAIN` is required. If it is missing, Compose fails during interpolation with:
-- `TRAEFIK_DOMAIN must be set in .env`
+Network topology:
+- `storyteller-frontend` joins both `internet` (external) and `intranet` networks
+- `storyteller-backend` joins only `intranet`
+- Frontend proxies `/api/*` to backend on the intranet network
 
 ## API Endpoints
 
