@@ -353,45 +353,73 @@ def _generate_content(
     return response_json
 
 
-def _iter_candidate_parts(response_json: Dict[str, Any]):
-    for candidate in response_json.get("candidates", []):
-        content = candidate.get("content", {})
-        for part in content.get("parts", []):
+def _iter_sdk_response_parts(response_obj: Any):
+    direct_parts = getattr(response_obj, "parts", None)
+    if isinstance(direct_parts, list) and direct_parts:
+        for part in direct_parts:
+            yield part
+        return
+
+    for candidate in getattr(response_obj, "candidates", None) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", None) or []:
             yield part
 
 
-def _candidate_texts(response_json: Dict[str, Any]) -> List[str]:
-    texts: List[str] = []
-    for candidate in response_json.get("candidates", []):
-        content = candidate.get("content", {})
-        parts = content.get("parts", [])
-        chunks: List[str] = []
-        for part in parts:
-            text = part.get("text")
-            if isinstance(text, str):
-                chunks.append(text)
-        combined = "".join(chunks).strip()
-        if combined:
-            texts.append(combined)
-    return texts
+def _extract_sdk_image_and_text(response_obj: Any) -> Tuple[str, str, str]:
+    revised_prompt_parts: List[str] = []
+    output_b64 = ""
+    output_mime = "image/png"
 
+    for part in _iter_sdk_response_parts(response_obj):
+        text_part = getattr(part, "text", None)
+        if text_part:
+            revised_prompt_parts.append(str(text_part))
 
-def _extract_text(response_json: Dict[str, Any]) -> str:
-    texts = _candidate_texts(response_json)
-    return texts[0] if texts else ""
+        inline_data = getattr(part, "inline_data", None)
+        if inline_data is None and isinstance(part, dict):
+            inline_data = part.get("inline_data") or part.get("inlineData")
 
+        if inline_data is not None:
+            raw_data = getattr(inline_data, "data", None)
+            mime_type = getattr(inline_data, "mime_type", None) or getattr(inline_data, "mimeType", None)
+            if raw_data is None and isinstance(inline_data, dict):
+                raw_data = inline_data.get("data")
+                mime_type = mime_type or inline_data.get("mime_type") or inline_data.get("mimeType")
+            mime_type = str(mime_type or "image/png")
 
-def _extract_image(response_json: Dict[str, Any]) -> Optional[Tuple[str, str]]:
-    for part in _iter_candidate_parts(response_json):
-        inline_data = part.get("inlineData") or part.get("inline_data")
-        if not isinstance(inline_data, dict):
-            continue
+            if raw_data:
+                if isinstance(raw_data, bytes):
+                    output_b64 = base64.b64encode(raw_data).decode("utf-8")
+                elif isinstance(raw_data, str):
+                    output_b64 = raw_data
+                else:
+                    output_b64 = base64.b64encode(bytes(raw_data)).decode("utf-8")
+                output_mime = mime_type
+                break
 
-        data = inline_data.get("data")
-        mime_type = inline_data.get("mimeType") or inline_data.get("mime_type") or "image/png"
-        if isinstance(data, str) and data.strip():
-            return data, str(mime_type)
-    return None
+        image_obj = None
+        try:
+            image_obj = part.as_image() if hasattr(part, "as_image") else None
+        except Exception:
+            image_obj = None
+
+        if image_obj is not None:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
+                tmp_path = tmp_file.name
+            try:
+                image_obj.save(tmp_path)
+                with open(tmp_path, "rb") as image_file:
+                    output_b64 = base64.b64encode(image_file.read()).decode("utf-8")
+                output_mime = "image/png"
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            break
+
+    return output_b64, output_mime, " ".join(revised_prompt_parts).strip()
 
 
 def _strip_code_fences(text: str) -> str:
@@ -1316,28 +1344,6 @@ def _supports_image_size(model_name: str) -> bool:
     return "gemini-3-pro-image-preview" in model_name
 
 
-def _gemini_image_config(runtime_settings: Optional[Dict[str, Any]], model_name: str) -> Dict[str, Any]:
-    aspect_ratio = str(
-        _runtime_value(
-            runtime_settings,
-            "gemini_aspect_ratio",
-            CONFIG["image"]["aspect_ratio"],
-        )
-    )
-    image_size = str(
-        _runtime_value(
-            runtime_settings,
-            "gemini_image_size",
-            CONFIG["image"]["image_size"],
-        )
-    )
-
-    config: Dict[str, Any] = {"aspectRatio": aspect_ratio}
-    if _supports_image_size(model_name):
-        config["imageSize"] = image_size
-    return config
-
-
 def generate_image(
     description: str,
     runtime_settings: Optional[Dict[str, Any]] = None,
@@ -1350,38 +1356,56 @@ def generate_image(
     full_prompt = f"{description}. {style_prompt}".strip()
 
     model = str(_runtime_value(runtime_settings, "image_model", CONFIG["models"]["image_gen"]))
+    attempt_models: List[str] = [model]
+    for fallback_model in ("gemini-2.5-flash-image", "gemini-3-pro-image-preview"):
+        if fallback_model not in attempt_models:
+            attempt_models.append(fallback_model)
 
-    def _generate_with_model(model_name: str) -> Tuple[Optional[Tuple[str, str]], str]:
-        response_json = _generate_content(
-            model=model_name,
-            parts=[{"text": full_prompt}],
-            response_modalities=["IMAGE"],
-            image_config=_gemini_image_config(runtime_settings, model_name),
-            temperature=_runtime_float(runtime_settings, "image_temperature", 1.0),
-            max_output_tokens=256,
+    def _generate_with_sdk(model_name: str) -> Tuple[Optional[Tuple[str, str]], str]:
+        image_config_kwargs: Dict[str, Any] = {
+            "aspect_ratio": str(
+                _runtime_value(runtime_settings, "gemini_aspect_ratio", CONFIG["image"]["aspect_ratio"])
+            )
+        }
+        if _supports_image_size(model_name):
+            image_config_kwargs["image_size"] = str(
+                _runtime_value(runtime_settings, "gemini_image_size", CONFIG["image"]["image_size"])
+            )
+
+        config = types.GenerateContentConfig(
+            response_modalities=["Image"],
+            image_config=types.ImageConfig(**image_config_kwargs),
         )
-        return _extract_image(response_json), _extract_text(response_json)
+
+        try:
+            client = _get_genai_client()
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[full_prompt],
+                config=config,
+            )
+            output_b64, output_mime, revised_prompt = _extract_sdk_image_and_text(response)
+            if not output_b64:
+                return None, revised_prompt
+            return (output_b64, output_mime), revised_prompt
+        except Exception as exc:
+            logger.warning("Gemini SDK image generation attempt failed [model=%s]: %s", model_name, exc)
+            return None, ""
 
     try:
-        image_payload, revised_prompt = _generate_with_model(model)
-        if not image_payload:
-            fallback_model = "gemini-3-pro-image-preview"
-            if model != fallback_model:
-                logger.warning(
-                    "Gemini image model returned no image payload [model=%s], retrying with %s",
-                    model,
-                    fallback_model,
-                )
-                image_payload, revised_prompt = _generate_with_model(fallback_model)
+        for model_name in attempt_models:
+            image_payload, revised_prompt = _generate_with_sdk(model_name)
+            if image_payload:
+                b64_data, mime_type = image_payload
+                return {
+                    "b64_json": b64_data,
+                    "revised_prompt": revised_prompt,
+                    "mime_type": mime_type,
+                }
 
-        if not image_payload:
-            return {"error": "Gemini image API did not return image data.", "error_code": "invalid_response"}
-
-        b64_data, mime_type = image_payload
         return {
-            "b64_json": b64_data,
-            "revised_prompt": revised_prompt,
-            "mime_type": mime_type,
+            "error": f"Gemini image API did not return image data. Tried models: {', '.join(attempt_models)}.",
+            "error_code": "invalid_response",
         }
     except Exception as exc:
         logger.error(f"Error generating Gemini image: {exc}")
@@ -1439,21 +1463,9 @@ def generate_image_with_references(
         image_config_kwargs["image_size"] = image_size
 
     config = types.GenerateContentConfig(
-        response_modalities=["TEXT", "IMAGE"],
+        response_modalities=["Image"],
         image_config=types.ImageConfig(**image_config_kwargs),
     )
-
-    def _iter_response_parts(response_obj: Any):
-        direct_parts = getattr(response_obj, "parts", None)
-        if isinstance(direct_parts, list) and direct_parts:
-            for part in direct_parts:
-                yield part
-            return
-
-        for candidate in getattr(response_obj, "candidates", None) or []:
-            content = getattr(candidate, "content", None)
-            for part in getattr(content, "parts", None) or []:
-                yield part
 
     try:
         client = _get_genai_client()
@@ -1462,51 +1474,7 @@ def generate_image_with_references(
             contents=contents,
             config=config,
         )
-
-        revised_prompt_parts: List[str] = []
-        output_b64 = ""
-        output_mime = "image/png"
-
-        for part in _iter_response_parts(response):
-            text_part = getattr(part, "text", None)
-            if text_part:
-                revised_prompt_parts.append(str(text_part))
-
-            inline_data = getattr(part, "inline_data", None)
-            if inline_data is not None:
-                raw_data = getattr(inline_data, "data", None)
-                mime_type = str(getattr(inline_data, "mime_type", "") or "image/png")
-                if raw_data:
-                    if isinstance(raw_data, bytes):
-                        output_b64 = base64.b64encode(raw_data).decode("utf-8")
-                    elif isinstance(raw_data, str):
-                        # Gemini SDK commonly returns base64 string here.
-                        output_b64 = raw_data
-                    else:
-                        output_b64 = base64.b64encode(bytes(raw_data)).decode("utf-8")
-                    output_mime = mime_type
-                    break
-
-            image_obj = None
-            try:
-                image_obj = part.as_image() if hasattr(part, "as_image") else None
-            except Exception:
-                image_obj = None
-
-            if image_obj is not None:
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
-                    tmp_path = tmp_file.name
-                try:
-                    image_obj.save(tmp_path)
-                    with open(tmp_path, "rb") as image_file:
-                        output_b64 = base64.b64encode(image_file.read()).decode("utf-8")
-                    output_mime = "image/png"
-                finally:
-                    try:
-                        os.remove(tmp_path)
-                    except OSError:
-                        pass
-                break
+        output_b64, output_mime, revised_prompt = _extract_sdk_image_and_text(response)
 
         if not output_b64:
             return {
@@ -1517,7 +1485,7 @@ def generate_image_with_references(
         return {
             "b64_json": output_b64,
             "mime_type": output_mime,
-            "revised_prompt": " ".join(revised_prompt_parts).strip(),
+            "revised_prompt": revised_prompt,
             "reference_names": used_reference_names,
         }
     except Exception as exc:
@@ -1541,29 +1509,40 @@ def edit_image_based_on_prompt(
 
     model = str(_runtime_value(runtime_settings, "image_edit_model", CONFIG["models"]["image_edit"]))
 
-    try:
-        response_json = _generate_content(
-            model=model,
-            parts=[
-                {"text": full_prompt},
-                {
-                    "inlineData": {
-                        "mimeType": "image/png",
-                        "data": base_image_b64,
-                    }
-                },
-            ],
-            response_modalities=["IMAGE"],
-            image_config=_gemini_image_config(runtime_settings, model),
-            temperature=_runtime_float(runtime_settings, "image_temperature", 1.0),
-            max_output_tokens=256,
+    image_config_kwargs: Dict[str, Any] = {
+        "aspect_ratio": str(
+            _runtime_value(runtime_settings, "gemini_aspect_ratio", CONFIG["image"]["aspect_ratio"])
         )
-        image_payload = _extract_image(response_json)
-        if not image_payload:
-            return {"error": "Gemini image edit API did not return image data.", "error_code": "invalid_response"}
+    }
+    if _supports_image_size(model):
+        image_config_kwargs["image_size"] = str(
+            _runtime_value(runtime_settings, "gemini_image_size", CONFIG["image"]["image_size"])
+        )
 
-        b64_data, mime_type = image_payload
-        return {"b64_json": b64_data, "mime_type": mime_type}
+    try:
+        raw_bytes = base64.b64decode(base_image_b64)
+        input_image = Image.open(io.BytesIO(raw_bytes))
+        if input_image.mode not in ("RGB", "L"):
+            input_image = input_image.convert("RGB")
+    except Exception:
+        return {"error": "Invalid base image data provided.", "error_code": "decode_error"}
+
+    config = types.GenerateContentConfig(
+        response_modalities=["Image"],
+        image_config=types.ImageConfig(**image_config_kwargs),
+    )
+
+    try:
+        client = _get_genai_client()
+        response = client.models.generate_content(
+            model=model,
+            contents=[full_prompt, input_image],
+            config=config,
+        )
+        output_b64, output_mime, _ = _extract_sdk_image_and_text(response)
+        if not output_b64:
+            return {"error": "Gemini image edit API did not return image data.", "error_code": "invalid_response"}
+        return {"b64_json": output_b64, "mime_type": output_mime}
     except Exception as exc:
         logger.error(f"Error editing Gemini image: {exc}")
         return {"error": f"Failed to edit image: {exc}", "error_code": "generic_edit_error"}
