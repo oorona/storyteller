@@ -156,8 +156,8 @@ Then open using that domain through Traefik.
 `docker-compose.yaml` includes Traefik labels for the `storyteller-frontend` service:
 - Router name: `storyteller`
 - Router rule: `Host(\`${TRAEFIK_DOMAIN}\`)`
-- Entrypoint: `web`
-- TLS: `false`
+- Entrypoint: `websecure`
+- TLS: `true`
 - Service port: `80` (frontend nginx)
 - Docker network hint: `traefik.docker.network=internet`
 
