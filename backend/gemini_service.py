@@ -1351,21 +1351,33 @@ def generate_image(
 
     model = str(_runtime_value(runtime_settings, "image_model", CONFIG["models"]["image_gen"]))
 
-    try:
+    def _generate_with_model(model_name: str) -> Tuple[Optional[Tuple[str, str]], str]:
         response_json = _generate_content(
-            model=model,
+            model=model_name,
             parts=[{"text": full_prompt}],
             response_modalities=["IMAGE"],
-            image_config=_gemini_image_config(runtime_settings, model),
+            image_config=_gemini_image_config(runtime_settings, model_name),
             temperature=_runtime_float(runtime_settings, "image_temperature", 1.0),
             max_output_tokens=256,
         )
-        image_payload = _extract_image(response_json)
+        return _extract_image(response_json), _extract_text(response_json)
+
+    try:
+        image_payload, revised_prompt = _generate_with_model(model)
+        if not image_payload:
+            fallback_model = "gemini-3-pro-image-preview"
+            if model != fallback_model:
+                logger.warning(
+                    "Gemini image model returned no image payload [model=%s], retrying with %s",
+                    model,
+                    fallback_model,
+                )
+                image_payload, revised_prompt = _generate_with_model(fallback_model)
+
         if not image_payload:
             return {"error": "Gemini image API did not return image data.", "error_code": "invalid_response"}
 
         b64_data, mime_type = image_payload
-        revised_prompt = _extract_text(response_json)
         return {
             "b64_json": b64_data,
             "revised_prompt": revised_prompt,
@@ -1431,6 +1443,18 @@ def generate_image_with_references(
         image_config=types.ImageConfig(**image_config_kwargs),
     )
 
+    def _iter_response_parts(response_obj: Any):
+        direct_parts = getattr(response_obj, "parts", None)
+        if isinstance(direct_parts, list) and direct_parts:
+            for part in direct_parts:
+                yield part
+            return
+
+        for candidate in getattr(response_obj, "candidates", None) or []:
+            content = getattr(candidate, "content", None)
+            for part in getattr(content, "parts", None) or []:
+                yield part
+
     try:
         client = _get_genai_client()
         response = client.models.generate_content(
@@ -1443,7 +1467,7 @@ def generate_image_with_references(
         output_b64 = ""
         output_mime = "image/png"
 
-        for part in getattr(response, "parts", []) or []:
+        for part in _iter_response_parts(response):
             text_part = getattr(part, "text", None)
             if text_part:
                 revised_prompt_parts.append(str(text_part))

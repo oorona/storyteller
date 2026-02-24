@@ -1722,15 +1722,14 @@ async function generateBook() {
     await generateCharacterReferencesInBackground(true);
     const missingCharacterRefs = storyData.story_characters.some((character) => !character.image_b64);
     if (missingCharacterRefs) {
-        hideLoadingOverlay();
-        showError(
-            5,
-            `Cannot generate book: missing character references. ${storyData.characterReferencesError || ""}`.trim()
-        );
-        generateBookButton.disabled = false;
-        document.getElementById("btn-step-5-back").disabled = false;
-        isGeneratingBook = false;
-        return;
+        const warningMessage = (
+            `Some character references are missing. Continuing without them. ${storyData.characterReferencesError || ""}`
+        ).trim();
+        console.warn(warningMessage);
+        if (generationStatus) {
+            generationStatus.style.display = "block";
+            generationStatus.textContent = warningMessage;
+        }
     }
 
     const childCharacter =
