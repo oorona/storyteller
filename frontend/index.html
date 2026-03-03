@@ -13,6 +13,15 @@
     </header>
 
     <main id="app-container">
+        <section id="your-books-panel" class="books-panel" aria-labelledby="your-books-heading">
+            <div class="books-panel-header">
+                <h2 id="your-books-heading">Your Books</h2>
+                <button type="button" class="back-button" id="btn-refresh-books">Refresh</button>
+            </div>
+            <p class="books-panel-subtitle">Queued and completed books are shown here.</p>
+            <ul id="your-books-list" class="books-list"></ul>
+        </section>
+
         <section id="step-1-basics" class="step active" aria-labelledby="step-1-heading">
             <h2 id="step-1-heading">Step 1: Tell Us About Your Child</h2>
             <form id="form-basics" class="step1-layout">
@@ -114,7 +123,7 @@
         </section>
 
         <section id="step-2-character" class="step" aria-labelledby="step-2-heading">
-            <h2 id="step-2-heading">Step 2: Choose Theme and Characters</h2>
+            <h2 id="step-2-heading">Step 2: Choose Theme</h2>
             <h3 class="suggestion-group-title">Theme Options</h3>
             <div id="theme-suggestions" class="suggestions-container" aria-live="polite">
                 <p class="loading-message">Loading story themes...</p>
@@ -122,29 +131,44 @@
             <div id="theme-selection" class="selection-display">
                 <p>Selected Theme: <strong id="selected-theme-text">None</strong></p>
             </div>
-            <h3 class="suggestion-group-title">Character Idea Options</h3>
-            <div id="character-suggestions" class="suggestions-container" aria-live="polite">
-                <p class="loading-message">Loading character ideas...</p>
-            </div>
-            <div id="character-selection" class="selection-display">
+            <div id="character-suggestions" class="suggestions-container" aria-live="polite" style="display:none;"></div>
+            <div id="character-selection" class="selection-display" style="display:none;">
                  <p>Selected Characters: <strong id="selected-character-text">None</strong></p>
             </div>
              <div class="navigation-buttons">
                 <button type="button" class="back-button" onclick="goToStep(1)">&larr; Back</button>
-                <button type="button" class="next-button" onclick="goToStep(3)" id="btn-step-2-next" disabled>Next: Build Story Cast &rarr;</button>
+                <button type="button" class="next-button" onclick="goToStep(3)" id="btn-step-2-next" disabled>Next: Select Characters &rarr;</button>
             </div>
             <p id="error-step-2" class="error-message" aria-live="assertive"></p>
         </section>
 
         <section id="step-3-name" class="step" aria-labelledby="step-3-heading">
-            <h2 id="step-3-heading">Step 3: Confirm Story Cast</h2>
+            <h2 id="step-3-heading">Step 3: Select Story Characters</h2>
             <h3 class="suggestion-group-title">Generated Cast</h3>
             <div id="name-suggestions" class="suggestions-container" aria-live="polite">
                 <p id="story-cast-status" class="loading-message">Preparing cast...</p>
                 <ul id="story-cast-list" class="suggestion-list"></ul>
             </div>
+            <div id="selected-character-viewer" class="review-box selected-character-viewer" aria-live="polite">
+                <h3>Selected Character Viewer</h3>
+                <p id="selected-character-viewer-status" class="review-inline-status"></p>
+                <div id="selected-character-tabs" class="selected-character-tabs"></div>
+                <div class="selected-character-viewer-content">
+                    <div class="selected-character-large-image-wrap">
+                        <img id="selected-character-large-image" src="" alt="Selected character full view">
+                        <p id="selected-character-large-placeholder" class="selected-character-large-placeholder">Select a character to preview.</p>
+                    </div>
+                    <div class="selected-character-detail-column">
+                        <p><strong>Name:</strong> <span id="selected-character-viewer-name"></span></p>
+                        <p><strong>Description:</strong> <span id="selected-character-viewer-description"></span></p>
+                        <p><strong>Image Understanding:</strong></p>
+                        <pre id="selected-character-viewer-analysis" class="analysis-pre"></pre>
+                        <button type="button" class="back-button" id="selected-character-open-large" disabled>Open Large View</button>
+                    </div>
+                </div>
+            </div>
              <div id="name-selection" class="selection-display">
-                 <p>Child Character: <strong id="selected-name-text">None</strong></p>
+                 <p>Selected Characters: <strong id="selected-name-text">0</strong></p>
             </div>
              <div class="navigation-buttons">
                 <button type="button" class="back-button" onclick="goToStep(2)">&larr; Back</button>
@@ -216,11 +240,29 @@
                     <p><strong>Theme/Setting:</strong> <span id="review-theme"></span></p>
                     <p><strong>Keywords:</strong> <span id="review-keywords"></span></p>
                 </div>
+                <div id="final-confirmation-panel" class="review-box confirmation-box">
+                    <h3>Final Confirmation</h3>
+                    <p class="confirmation-note">
+                        Review selected characters and hover each image to inspect extracted visual analysis before submitting.
+                    </p>
+                    <p><strong>Story History Snapshot:</strong></p>
+                    <p id="final-history-text" class="history-preview"></p>
+                    <div class="review-main-characters-block">
+                        <strong>Selected Character Confirmation:</strong>
+                        <p id="final-characters-status" class="review-inline-status"></p>
+                        <ul id="final-characters-grid" class="confirm-character-grid"></ul>
+                    </div>
+                    <label for="final-submit-check" class="confirm-submit-label">
+                        <input type="checkbox" id="final-submit-check">
+                        I confirm this cast and history snapshot are correct. Submit and generate the book.
+                    </label>
+                    <p id="final-submit-hint" class="review-inline-status"></p>
+                </div>
                 <div class="generation-controls">
                      <p id="generation-status" aria-live="polite" style="display:none;"></p>
                     <div class="navigation-buttons">
                          <button type="button" class="back-button" onclick="goToStep(4)" id="btn-step-5-back">&larr; Back</button>
-                         <button type="button" class="generate-button" id="btn-generate-book" onclick="generateBook()">📚 Generate Book ✨</button>
+                         <button type="button" class="generate-button" id="btn-generate-book" onclick="generateBook()">Submit & Generate Book</button>
                     </div>
                 </div>
                 <p id="error-step-5" class="error-message" aria-live="assertive"></p>
@@ -251,8 +293,29 @@
                  <button type="button" class="next-button" id="btn-download-pdf" onclick="downloadBookPdf()" disabled>Download PDF</button>
                  <button type="button" class="start-over-button" onclick="startOver()">Create Another Story</button>
              </div>
-             <p id="error-step-6" class="error-message" aria-live="assertive"></p>
+            <p id="error-step-6" class="error-message" aria-live="assertive"></p>
         </section>
+
+        <div id="character-inspector-modal" class="character-inspector-modal" aria-hidden="true">
+            <div class="character-inspector-dialog" role="dialog" aria-modal="true" aria-labelledby="character-inspector-title">
+                <div class="character-inspector-header">
+                    <h3 id="character-inspector-title">Character Inspector</h3>
+                    <button type="button" class="back-button" id="character-inspector-close">Close</button>
+                </div>
+                <div class="character-inspector-body">
+                    <div class="character-inspector-image-wrap">
+                        <img id="character-inspector-image" src="" alt="Character full image">
+                        <p id="character-inspector-placeholder" class="selected-character-large-placeholder">Image not ready yet.</p>
+                    </div>
+                    <div class="character-inspector-details">
+                        <p><strong>Name:</strong> <span id="character-inspector-name"></span></p>
+                        <p><strong>Description:</strong> <span id="character-inspector-description"></span></p>
+                        <p><strong>Image Understanding:</strong></p>
+                        <pre id="character-inspector-analysis" class="analysis-pre"></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
 
     </main>
 

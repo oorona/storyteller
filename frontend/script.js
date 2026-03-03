@@ -1,4 +1,5 @@
 const API_BASE_URL = "/api";
+const BOOK_JOBS_STORAGE_KEY = "storyteller_book_jobs_v1";
 
 const FALLBACK_SETTINGS_OPTIONS = {
     default_provider: "gemini",
@@ -70,6 +71,8 @@ const storyData = {
     selected_plot: "",
     child_character: null,
     story_characters: [],
+    selected_story_character_names: [],
+    active_selected_story_character_name: "",
     storyCastState: "idle",
     storyCastError: null,
     storyCastSourceKey: "",
@@ -98,6 +101,8 @@ let isExtractingProfile = false;
 let bookLoadingFeedbackInterval = null;
 let bookLoadingStartedAt = 0;
 let bookLoadingStageIndex = 0;
+let bookJobPollInterval = null;
+let activeBookJobId = "";
 
 const BOOK_LOADING_STAGES = [
     {
@@ -159,12 +164,35 @@ const bookNextButton = document.getElementById("book-next-button");
 const bookPageIndicator = document.getElementById("book-page-indicator");
 const displayChildNameBook = document.getElementById("display-child-name-book");
 const downloadPdfButton = document.getElementById("btn-download-pdf");
+const yourBooksList = document.getElementById("your-books-list");
+const refreshBooksButton = document.getElementById("btn-refresh-books");
 
 const reviewAiProvider = document.getElementById("review-ai-provider");
 const reviewTextModel = document.getElementById("review-text-model");
 const reviewImageModels = document.getElementById("review-image-models");
 const reviewMainCharacters = document.getElementById("review-main-characters");
 const reviewMainCharactersStatus = document.getElementById("review-main-characters-status");
+const finalHistoryText = document.getElementById("final-history-text");
+const finalCharactersStatus = document.getElementById("final-characters-status");
+const finalCharactersGrid = document.getElementById("final-characters-grid");
+const finalSubmitCheck = document.getElementById("final-submit-check");
+const finalSubmitHint = document.getElementById("final-submit-hint");
+const selectedCharacterViewerStatus = document.getElementById("selected-character-viewer-status");
+const selectedCharacterTabs = document.getElementById("selected-character-tabs");
+const selectedCharacterLargeImage = document.getElementById("selected-character-large-image");
+const selectedCharacterLargePlaceholder = document.getElementById("selected-character-large-placeholder");
+const selectedCharacterViewerName = document.getElementById("selected-character-viewer-name");
+const selectedCharacterViewerDescription = document.getElementById("selected-character-viewer-description");
+const selectedCharacterViewerAnalysis = document.getElementById("selected-character-viewer-analysis");
+const selectedCharacterOpenLarge = document.getElementById("selected-character-open-large");
+const characterInspectorModal = document.getElementById("character-inspector-modal");
+const characterInspectorClose = document.getElementById("character-inspector-close");
+const characterInspectorTitle = document.getElementById("character-inspector-title");
+const characterInspectorImage = document.getElementById("character-inspector-image");
+const characterInspectorPlaceholder = document.getElementById("character-inspector-placeholder");
+const characterInspectorName = document.getElementById("character-inspector-name");
+const characterInspectorDescription = document.getElementById("character-inspector-description");
+const characterInspectorAnalysis = document.getElementById("character-inspector-analysis");
 const childProfileInput = document.getElementById("child-profile-input");
 const profileExtractionSummary = document.getElementById("profile-extraction-summary");
 const extractedChildName = document.getElementById("extracted-child-name");
@@ -235,6 +263,43 @@ async function postApi(endpoint, data = {}) {
                 Accept: "application/json",
             },
             body: JSON.stringify(data),
+        });
+
+        const contentType = response.headers.get("content-type") || "";
+        let responseBody = null;
+
+        if (contentType.includes("application/json")) {
+            responseBody = await response.json();
+        } else {
+            const textBody = await response.text();
+            throw new Error(
+                `Server returned non-JSON response (status ${response.status}): ${textBody.slice(0, 120)}`
+            );
+        }
+
+        if (!response.ok) {
+            const errorMessage =
+                responseBody?.error || `HTTP error ${response.status}: ${response.statusText}`;
+            throw new Error(errorMessage);
+        }
+
+        return responseBody;
+    } catch (error) {
+        console.error(`API error for ${url}:`, error);
+        throw new Error(error.message || "API call failed.");
+    }
+}
+
+async function getApi(endpoint) {
+    const url = `${API_BASE_URL}${endpoint}`;
+    let response;
+
+    try {
+        response = await fetch(url, {
+            method: "GET",
+            headers: {
+                Accept: "application/json",
+            },
         });
 
         const contentType = response.headers.get("content-type") || "";
@@ -427,6 +492,318 @@ function getRequestContext() {
         provider: storyData.aiSettings.provider,
         settings: { ...storyData.aiSettings },
     };
+}
+
+function loadStoredBookJobIds() {
+    try {
+        const rawValue = window.localStorage.getItem(BOOK_JOBS_STORAGE_KEY);
+        if (!rawValue) {
+            return [];
+        }
+        const parsed = JSON.parse(rawValue);
+        if (!Array.isArray(parsed)) {
+            return [];
+        }
+        const cleaned = [];
+        parsed.forEach((value) => {
+            const token = String(value || "").trim();
+            if (token && !cleaned.includes(token)) {
+                cleaned.push(token);
+            }
+        });
+        return cleaned.slice(0, 60);
+    } catch (error) {
+        console.warn("Could not load stored book jobs:", error);
+        return [];
+    }
+}
+
+function saveStoredBookJobIds(jobIds) {
+    const unique = [];
+    (Array.isArray(jobIds) ? jobIds : []).forEach((value) => {
+        const token = String(value || "").trim();
+        if (token && !unique.includes(token)) {
+            unique.push(token);
+        }
+    });
+    window.localStorage.setItem(BOOK_JOBS_STORAGE_KEY, JSON.stringify(unique.slice(0, 60)));
+}
+
+function rememberBookJobId(jobId) {
+    const token = String(jobId || "").trim();
+    if (!token) {
+        return;
+    }
+    const existing = loadStoredBookJobIds();
+    const next = [token, ...existing.filter((id) => id !== token)];
+    saveStoredBookJobIds(next);
+}
+
+function formatBookTimestamp(value) {
+    const timestamp = String(value || "").trim();
+    if (!timestamp) {
+        return "-";
+    }
+    const parsed = new Date(timestamp);
+    if (Number.isNaN(parsed.getTime())) {
+        return timestamp;
+    }
+    return parsed.toLocaleString();
+}
+
+function isActiveBookJobStatus(status) {
+    const normalized = String(status || "").toLowerCase();
+    return normalized === "queued" || normalized === "running";
+}
+
+function bookStatusClass(status) {
+    const normalized = String(status || "").toLowerCase();
+    if (normalized === "completed") {
+        return "books-status is-completed";
+    }
+    if (normalized === "failed") {
+        return "books-status is-failed";
+    }
+    return "books-status is-running";
+}
+
+function getStageLabel(stage) {
+    const normalized = String(stage || "").toLowerCase();
+    if (normalized === "queued") {
+        return "Queued";
+    }
+    if (normalized === "story") {
+        return "Generating story";
+    }
+    if (normalized === "sections") {
+        return "Splitting into sections";
+    }
+    if (normalized === "images") {
+        return "Generating images";
+    }
+    if (normalized === "finalize") {
+        return "Finalizing";
+    }
+    if (normalized === "completed") {
+        return "Completed";
+    }
+    if (normalized === "failed") {
+        return "Failed";
+    }
+    return normalized || "Running";
+}
+
+function renderYourBooks(jobs) {
+    if (!yourBooksList) {
+        return;
+    }
+
+    yourBooksList.innerHTML = "";
+    const items = Array.isArray(jobs) ? jobs : [];
+    if (items.length === 0) {
+        const empty = document.createElement("li");
+        empty.className = "loading-message";
+        empty.textContent = "No books yet. Generate one to see it here.";
+        yourBooksList.appendChild(empty);
+        return;
+    }
+
+    items.forEach((job) => {
+        const jobId = String(job.job_id || "").trim();
+        const status = String(job.status || "unknown").toLowerCase();
+
+        const listItem = document.createElement("li");
+
+        const header = document.createElement("div");
+        header.className = "books-item-header";
+
+        const title = document.createElement("span");
+        title.className = "books-item-title";
+        title.textContent = job.child_name
+            ? `${job.child_name} - ${job.theme || "Story"}`
+            : job.theme || "Story";
+
+        const badge = document.createElement("span");
+        badge.className = bookStatusClass(status);
+        badge.textContent = status;
+
+        header.appendChild(title);
+        header.appendChild(badge);
+        listItem.appendChild(header);
+
+        const meta = document.createElement("p");
+        meta.className = "books-item-meta";
+        meta.textContent =
+            `Updated: ${formatBookTimestamp(job.updated_at)} | ` +
+            `Pages: ${job.page_count || 0}`;
+        listItem.appendChild(meta);
+
+        const progressPercent = Math.max(0, Math.min(Number(job.progress_percent || 0), 100));
+        const progressCurrent = Number(job.progress_current || 0);
+        const progressTotal = Number(job.progress_total || 0);
+        const isActive = status === "queued" || status === "running";
+        if (isActive) {
+            const progressWrap = document.createElement("div");
+            progressWrap.className = "books-progress";
+
+            const track = document.createElement("div");
+            track.className = "books-progress-track";
+            const fill = document.createElement("div");
+            fill.className = "books-progress-fill";
+            fill.style.width = `${progressPercent}%`;
+            track.appendChild(fill);
+
+            const label = document.createElement("div");
+            label.className = "books-progress-label";
+            const unitsLabel =
+                progressTotal > 0 ? `${Math.max(0, Math.min(progressCurrent, progressTotal))}/${progressTotal}` : "-";
+            label.textContent = `${getStageLabel(job.stage)} - ${progressPercent}% (${unitsLabel})`;
+
+            progressWrap.appendChild(track);
+            progressWrap.appendChild(label);
+            listItem.appendChild(progressWrap);
+        }
+
+        if (status === "failed" && job.error) {
+            const errorText = document.createElement("p");
+            errorText.className = "books-item-meta";
+            errorText.textContent = `Error: ${job.error}`;
+            listItem.appendChild(errorText);
+        }
+
+        if (status === "completed" && Number(job.page_count || 0) > 0 && jobId) {
+            const actions = document.createElement("div");
+            actions.className = "books-item-actions";
+            const openButton = document.createElement("button");
+            openButton.type = "button";
+            openButton.className = "next-button";
+            openButton.textContent = "Open";
+            openButton.onclick = async () => {
+                try {
+                    await openBookJob(jobId);
+                } catch (error) {
+                    console.error("Failed to open book job:", error);
+                }
+            };
+            actions.appendChild(openButton);
+            listItem.appendChild(actions);
+        }
+
+        yourBooksList.appendChild(listItem);
+    });
+}
+
+function startBookJobPolling() {
+    if (bookJobPollInterval) {
+        return;
+    }
+    bookJobPollInterval = window.setInterval(() => {
+        refreshYourBooks();
+    }, 5000);
+}
+
+function stopBookJobPolling() {
+    if (!bookJobPollInterval) {
+        return;
+    }
+    clearInterval(bookJobPollInterval);
+    bookJobPollInterval = null;
+}
+
+async function refreshYourBooks() {
+    const jobIds = loadStoredBookJobIds();
+
+    try {
+        const endpoint =
+            jobIds.length > 0
+                ? `/book/jobs?ids=${encodeURIComponent(jobIds.join(","))}`
+                : "/book/jobs";
+        const response = await getApi(endpoint);
+        const jobs = Array.isArray(response.jobs) ? response.jobs : [];
+        if (jobs.length > 0) {
+            const mergedIds = [
+                ...jobs.map((job) => String(job.job_id || "").trim()).filter(Boolean),
+                ...jobIds,
+            ];
+            saveStoredBookJobIds(mergedIds);
+        }
+        renderYourBooks(jobs);
+
+        const hasActiveJobs = jobs.some((job) => isActiveBookJobStatus(job.status));
+        if (hasActiveJobs) {
+            startBookJobPolling();
+        } else {
+            stopBookJobPolling();
+        }
+
+        if (activeBookJobId) {
+            const activeJob = jobs.find((job) => job.job_id === activeBookJobId);
+            if (activeJob && activeJob.status === "failed") {
+                activeBookJobId = "";
+                if (settingsStatus) {
+                    settingsStatus.textContent = `Book job failed: ${activeJob.error || "Unknown error."}`;
+                    settingsStatus.style.color = "#a13b3b";
+                }
+            } else if (activeJob && activeJob.status === "completed") {
+                activeBookJobId = "";
+                if (settingsStatus) {
+                    settingsStatus.textContent = "Your new book is ready in the Your Books section.";
+                    settingsStatus.style.color = "#2f6f2f";
+                }
+            }
+        }
+    } catch (error) {
+        console.warn("Could not refresh your books:", error.message);
+    }
+}
+
+function showStepDirect(targetStepNum) {
+    const targetElementId = stepElementIds[targetStepNum];
+    const nextStepElement = document.getElementById(targetElementId);
+    if (!nextStepElement) {
+        return;
+    }
+
+    steps.forEach((step) => step.classList.remove("active"));
+    nextStepElement.classList.add("active");
+    currentStep = targetStepNum;
+
+    if (targetStepNum === 6) {
+        displayCurrentPage();
+    } else if (targetStepNum === 5) {
+        updateReviewDetails();
+    }
+
+    try {
+        nextStepElement.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (error) {
+        console.warn("Scroll failed:", error);
+    }
+}
+
+async function openBookJob(jobId) {
+    const token = String(jobId || "").trim();
+    if (!token) {
+        throw new Error("Invalid book job id.");
+    }
+
+    const response = await getApi(`/book/jobs/${encodeURIComponent(token)}?include_pages=1`);
+    if (response.status !== "completed") {
+        throw new Error(`Book is not ready yet (status: ${response.status}).`);
+    }
+    if (!Array.isArray(response.pages) || response.pages.length === 0) {
+        throw new Error("Book pages are missing.");
+    }
+
+    storyData.child_name = response.child_name || storyData.child_name || "";
+    storyData.bookPages = response.pages;
+    storyData.currentPageIndex = 0;
+
+    if (downloadPdfButton) {
+        downloadPdfButton.disabled = false;
+    }
+    clearAllErrors();
+    showStepDirect(6);
 }
 
 function cleanSuggestionText(value) {
@@ -656,6 +1033,8 @@ function clearProfileExtractionData() {
     storyData.selected_plot = "";
     storyData.child_character = null;
     storyData.story_characters = [];
+    storyData.selected_story_character_names = [];
+    storyData.active_selected_story_character_name = "";
     storyData.storyCastState = "idle";
     storyData.storyCastError = null;
     storyData.storyCastSourceKey = "";
@@ -739,6 +1118,8 @@ function resetStoryCastState() {
     storyData.selected_character_descriptions = [];
     storyData.child_character = null;
     storyData.story_characters = [];
+    storyData.selected_story_character_names = [];
+    storyData.active_selected_story_character_name = "";
     storyData.storyCastState = "idle";
     storyData.storyCastError = null;
     storyData.storyCastSourceKey = "";
@@ -753,6 +1134,331 @@ function resetMainStoryCharactersState() {
     storyData.mainStoryCharactersState = "idle";
     storyData.mainStoryCharactersError = null;
     storyData.mainStoryCharactersSourceKey = "";
+}
+
+function getSelectedStoryCharacters() {
+    const cast = Array.isArray(storyData.story_characters) ? storyData.story_characters : [];
+    if (!Array.isArray(storyData.selected_story_character_names) || storyData.selected_story_character_names.length === 0) {
+        return [];
+    }
+    const selectedKeys = new Set(
+        storyData.selected_story_character_names.map((value) => normalizeSuggestionKey(value))
+    );
+    return cast.filter((character) => selectedKeys.has(normalizeSuggestionKey(character.name)));
+}
+
+function findCharacterByName(name, list = storyData.story_characters) {
+    const key = normalizeSuggestionKey(name);
+    const cast = Array.isArray(list) ? list : [];
+    return cast.find((character) => normalizeSuggestionKey(character.name) === key) || null;
+}
+
+function syncActiveSelectedCharacter(selectedCast) {
+    const selected = Array.isArray(selectedCast) ? selectedCast : getSelectedStoryCharacters();
+    if (selected.length === 0) {
+        storyData.active_selected_story_character_name = "";
+        return;
+    }
+    const active = findCharacterByName(storyData.active_selected_story_character_name, selected);
+    if (!active) {
+        storyData.active_selected_story_character_name = selected[0].name;
+    }
+}
+
+function getCharacterVisualSummary(character) {
+    const profile = character?.visual_profile;
+    const truncate = (text, max = 140) => (text.length > max ? `${text.slice(0, max - 3)}...` : text);
+    if (!profile || typeof profile !== "object") {
+        return "";
+    }
+    if (typeof profile.summary === "string" && profile.summary.trim()) {
+        return truncate(profile.summary.trim());
+    }
+    if (typeof profile.consistency_prompt === "string" && profile.consistency_prompt.trim()) {
+        return truncate(profile.consistency_prompt.trim());
+    }
+    return "";
+}
+
+function getCharacterAnalysisText(character) {
+    const profile = character?.visual_profile;
+    if (!profile || typeof profile !== "object") {
+        if (!character?.image_b64) {
+            return "Reference image pending generation.";
+        }
+        if (storyData.characterReferencesState === "loading") {
+            return "Image analysis is in progress.";
+        }
+        return "No image analysis available yet.";
+    }
+
+    const lines = [];
+    if (typeof profile.summary === "string" && profile.summary.trim()) {
+        lines.push(`Summary: ${profile.summary.trim()}`);
+    }
+    const listFields = [
+        ["appearance", "Appearance"],
+        ["clothing", "Clothing"],
+        ["colors", "Colors"],
+        ["accessories", "Accessories"],
+        ["distinctive_features", "Features"],
+        ["style_notes", "Style notes"],
+    ];
+    listFields.forEach(([key, label]) => {
+        const values = Array.isArray(profile[key]) ? profile[key] : [];
+        const clean = values.map((item) => String(item || "").trim()).filter(Boolean);
+        if (clean.length > 0) {
+            lines.push(`${label}: ${clean.join(", ")}`);
+        }
+    });
+    if (typeof profile.consistency_prompt === "string" && profile.consistency_prompt.trim()) {
+        lines.push(`Consistency: ${profile.consistency_prompt.trim()}`);
+    }
+    return lines.join("\n") || "No image analysis available yet.";
+}
+
+function openCharacterInspector(character) {
+    if (!characterInspectorModal) {
+        return;
+    }
+    if (!character || typeof character !== "object") {
+        return;
+    }
+
+    const name = character.name || "Unnamed character";
+    const description = character.description || "";
+    const analysisText = getCharacterAnalysisText(character);
+
+    if (characterInspectorTitle) {
+        characterInspectorTitle.textContent = `Character Inspector: ${name}`;
+    }
+    if (characterInspectorName) {
+        characterInspectorName.textContent = name;
+    }
+    if (characterInspectorDescription) {
+        characterInspectorDescription.textContent = description || "No description available.";
+    }
+    if (characterInspectorAnalysis) {
+        characterInspectorAnalysis.textContent = analysisText;
+    }
+
+    if (characterInspectorImage && characterInspectorPlaceholder) {
+        if (character.image_b64) {
+            characterInspectorImage.src = `data:${character.mime_type || "image/png"};base64,${character.image_b64}`;
+            characterInspectorImage.alt = `${name} full character view`;
+            characterInspectorImage.style.display = "block";
+            characterInspectorPlaceholder.style.display = "none";
+        } else {
+            characterInspectorImage.src = "";
+            characterInspectorImage.style.display = "none";
+            characterInspectorPlaceholder.style.display = "flex";
+            characterInspectorPlaceholder.textContent = "Image not ready yet.";
+        }
+    }
+
+    characterInspectorModal.classList.add("is-open");
+    characterInspectorModal.setAttribute("aria-hidden", "false");
+}
+
+function closeCharacterInspector() {
+    if (!characterInspectorModal) {
+        return;
+    }
+    characterInspectorModal.classList.remove("is-open");
+    characterInspectorModal.setAttribute("aria-hidden", "true");
+}
+
+function renderSelectedCharacterViewer() {
+    if (
+        !selectedCharacterViewerStatus ||
+        !selectedCharacterTabs ||
+        !selectedCharacterLargeImage ||
+        !selectedCharacterLargePlaceholder ||
+        !selectedCharacterViewerName ||
+        !selectedCharacterViewerDescription ||
+        !selectedCharacterViewerAnalysis ||
+        !selectedCharacterOpenLarge
+    ) {
+        return;
+    }
+
+    const selectedCast = getSelectedStoryCharacters();
+    syncActiveSelectedCharacter(selectedCast);
+
+    selectedCharacterTabs.innerHTML = "";
+    if (selectedCast.length === 0) {
+        selectedCharacterViewerStatus.textContent = "Select one or more characters to inspect them in detail.";
+        selectedCharacterViewerName.textContent = "";
+        selectedCharacterViewerDescription.textContent = "";
+        selectedCharacterViewerAnalysis.textContent = "No character selected.";
+        selectedCharacterLargeImage.src = "";
+        selectedCharacterLargeImage.style.display = "none";
+        selectedCharacterLargePlaceholder.style.display = "flex";
+        selectedCharacterLargePlaceholder.textContent = "Select a character to preview.";
+        selectedCharacterOpenLarge.disabled = true;
+        selectedCharacterOpenLarge.onclick = null;
+        return;
+    }
+
+    selectedCharacterViewerStatus.textContent =
+        "Use tabs to switch characters. Full body view is shown without cropping.";
+
+    selectedCast.forEach((character) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "selected-character-tab";
+        button.textContent = character.name;
+        const isActive =
+            normalizeSuggestionKey(character.name) ===
+            normalizeSuggestionKey(storyData.active_selected_story_character_name);
+        if (isActive) {
+            button.classList.add("is-active");
+        }
+        button.onclick = () => {
+            storyData.active_selected_story_character_name = character.name;
+            renderSelectedCharacterViewer();
+        };
+        selectedCharacterTabs.appendChild(button);
+    });
+
+    const activeCharacter =
+        findCharacterByName(storyData.active_selected_story_character_name, selectedCast) || selectedCast[0];
+    storyData.active_selected_story_character_name = activeCharacter.name;
+
+    selectedCharacterViewerName.textContent = activeCharacter.name || "";
+    selectedCharacterViewerDescription.textContent =
+        activeCharacter.description || "No character description available.";
+    selectedCharacterViewerAnalysis.textContent = getCharacterAnalysisText(activeCharacter);
+
+    if (activeCharacter.image_b64) {
+        selectedCharacterLargeImage.src = `data:${activeCharacter.mime_type || "image/png"};base64,${activeCharacter.image_b64}`;
+        selectedCharacterLargeImage.alt = `${activeCharacter.name} full character view`;
+        selectedCharacterLargeImage.style.display = "block";
+        selectedCharacterLargeImage.style.cursor = "zoom-in";
+        selectedCharacterLargeImage.onclick = () => openCharacterInspector(activeCharacter);
+        selectedCharacterLargePlaceholder.style.display = "none";
+    } else {
+        selectedCharacterLargeImage.src = "";
+        selectedCharacterLargeImage.style.display = "none";
+        selectedCharacterLargeImage.style.cursor = "default";
+        selectedCharacterLargeImage.onclick = null;
+        selectedCharacterLargePlaceholder.style.display = "flex";
+        selectedCharacterLargePlaceholder.textContent =
+            storyData.characterReferencesState === "loading"
+                ? "Generating selected character image..."
+                : "Image pending generation.";
+    }
+
+    selectedCharacterOpenLarge.disabled = false;
+    selectedCharacterOpenLarge.onclick = () => openCharacterInspector(activeCharacter);
+}
+
+function resetFinalSubmitConfirmation() {
+    if (finalSubmitCheck) {
+        finalSubmitCheck.checked = false;
+    }
+}
+
+function renderFinalConfirmation(selectedCast) {
+    if (finalHistoryText) {
+        const safeProfileText = String(storyData.child_profile_input || "").trim();
+        const profilePreview =
+            safeProfileText.length > 420 ? `${safeProfileText.slice(0, 417)}...` : safeProfileText || "Not provided.";
+        const historyParts = [
+            `Child profile: ${profilePreview}`,
+            `Learning goal: ${storyData.learning_objective || "Not selected"}`,
+            `Theme: ${storyData.story_theme || "Not selected"}`,
+            `Plot: ${storyData.selected_plot || "Not selected"}`,
+            `Selected characters: ${(selectedCast || []).map((character) => character.name).join(", ") || "None"}`,
+        ];
+        finalHistoryText.textContent = historyParts.join("\n");
+    }
+
+    if (!finalCharactersGrid || !finalCharactersStatus) {
+        return;
+    }
+
+    finalCharactersGrid.innerHTML = "";
+    if (!Array.isArray(selectedCast) || selectedCast.length === 0) {
+        finalCharactersStatus.textContent = "Select at least 2 characters to continue.";
+        return;
+    }
+
+    const pendingCount = selectedCast.filter((character) => !character.image_b64 || !character.visual_profile).length;
+    finalCharactersStatus.textContent =
+        pendingCount > 0
+            ? `${selectedCast.length} selected. ${pendingCount} character(s) still preparing image/analysis. Click a card for full view.`
+            : `${selectedCast.length} selected. All references and analyses are ready. Click a card for full view.`;
+
+    selectedCast.forEach((character) => {
+        const listItem = document.createElement("li");
+        listItem.className = "confirm-character-card";
+
+        const imageWrap = document.createElement("div");
+        imageWrap.className = "confirm-character-image-wrap";
+        imageWrap.tabIndex = 0;
+
+        const analysisText = getCharacterAnalysisText(character);
+        imageWrap.title = analysisText;
+        imageWrap.setAttribute("role", "button");
+        imageWrap.setAttribute("aria-label", `Open full view for ${character.name}`);
+        imageWrap.style.cursor = "pointer";
+        imageWrap.onclick = () => openCharacterInspector(character);
+        imageWrap.onkeydown = (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                openCharacterInspector(character);
+            }
+        };
+
+        if (character.image_b64) {
+            const img = document.createElement("img");
+            img.alt = `${character.name} confirmation reference`;
+            img.src = `data:${character.mime_type || "image/png"};base64,${character.image_b64}`;
+            imageWrap.appendChild(img);
+        } else {
+            const placeholder = document.createElement("div");
+            placeholder.className = "confirm-character-placeholder";
+            const initials = (character.name || "?")
+                .split(" ")
+                .map((part) => part.slice(0, 1))
+                .join("")
+                .slice(0, 2)
+                .toUpperCase();
+            placeholder.textContent = initials || "?";
+            imageWrap.appendChild(placeholder);
+        }
+
+        const analysisOverlay = document.createElement("div");
+        analysisOverlay.className = "confirm-character-analysis";
+        analysisOverlay.textContent = analysisText;
+        imageWrap.appendChild(analysisOverlay);
+
+        const name = document.createElement("p");
+        name.className = "confirm-character-name";
+        name.textContent = character.name || "Unnamed character";
+
+        listItem.appendChild(imageWrap);
+        listItem.appendChild(name);
+        finalCharactersGrid.appendChild(listItem);
+    });
+}
+
+async function analyzeCharacterImage(character) {
+    if (!character?.image_b64) {
+        return;
+    }
+
+    const understanding = await postApi("/image/understand", {
+        image_b64: character.image_b64,
+        mime_type: character.mime_type || "image/png",
+        character_name: character.name,
+        character_description: character.description,
+        ...getRequestContext(),
+    });
+    if (understanding?.visual_profile && typeof understanding.visual_profile === "object") {
+        character.visual_profile = understanding.visual_profile;
+    }
 }
 
 function buildMainStoryCharactersSourceKey() {
@@ -845,6 +1551,7 @@ function handleAiSettingsChange() {
     resetStoryCastState();
     resetCharacterPreviewState();
     resetMainStoryCharactersState();
+    resetFinalSubmitConfirmation();
     storyData.bookPages = [];
     storyData.currentPageIndex = 0;
 
@@ -952,21 +1659,12 @@ async function goToStep(targetStepNum) {
             return;
         }
     }
-    if (
-        currentStep === 2 &&
-        targetStepNum > 2 &&
-        (!Array.isArray(storyData.selected_character_descriptions) ||
-            storyData.selected_character_descriptions.length === 0)
-    ) {
-        showError(2, "Please select one or more character options.");
-        return;
-    }
     if (currentStep === 2 && targetStepNum > 2 && !storyData.story_theme) {
         showError(2, "Please select a story theme.");
         return;
     }
-    if (currentStep === 3 && targetStepNum > 3 && (!storyData.story_characters || storyData.story_characters.length < 2)) {
-        showError(3, "Story cast is not ready yet. Please wait.");
+    if (currentStep === 3 && targetStepNum > 3 && getSelectedStoryCharacters().length < 2) {
+        showError(3, "Please select at least 2 characters.");
         return;
     }
     if (currentStep === 4 && targetStepNum > 4 && !storyData.selected_plot) {
@@ -997,8 +1695,8 @@ async function goToStep(targetStepNum) {
         console.warn("Scroll failed:", scrollError);
     }
 
-    if (currentStep === 2 && (previousStep < currentStep || storyData.character_suggestions.length === 0)) {
-        fetchCharacterSuggestions();
+    if (currentStep === 2) {
+        displayThemeSuggestions();
     }
     if (currentStep === 3) {
         await prepareStoryCast();
@@ -1007,6 +1705,9 @@ async function goToStep(targetStepNum) {
         fetchPlotSuggestions();
     }
     if (currentStep === 5) {
+        if (previousStep < 5) {
+            resetFinalSubmitConfirmation();
+        }
         updateReviewDetails();
         await generateCharacterReferencesInBackground();
     }
@@ -1030,15 +1731,7 @@ function setSuggestionsLoading(type) {
 }
 
 async function fetchCharacterSuggestions() {
-    setSuggestionsLoading("character");
     displayThemeSuggestions();
-    if (storyData.character_suggestions.length > 0) {
-        displaySuggestions("character", storyData.character_suggestions);
-        return;
-    }
-    showError(2, "No character suggestions were extracted. Please go back and try different child details.");
-    document.getElementById("character-suggestions").innerHTML =
-        "<p class=\"error-message\">No character suggestions available.</p>";
 }
 
 function displayThemeSuggestions() {
@@ -1063,14 +1756,20 @@ function displayThemeSuggestions() {
     if (selectedThemeText) {
         selectedThemeText.textContent = storyData.story_theme || "None";
     }
+    if (nextButtons[2]) {
+        nextButtons[2].disabled = !storyData.story_theme;
+    }
 }
 
 function buildStoryCastSourceKey() {
+    const sourceIdeas = Array.isArray(storyData.character_suggestions)
+        ? storyData.character_suggestions.slice(0, 8)
+        : [];
     return [
         storyData.child_name,
         storyData.learning_objective,
         storyData.story_theme,
-        ...(storyData.selected_character_descriptions || []),
+        ...sourceIdeas,
         storyData.aiSettings.provider,
         storyData.aiSettings.text_model,
         String(storyData.aiSettings.text_temperature),
@@ -1087,30 +1786,128 @@ function renderStoryCastPreview() {
     storyCastList.innerHTML = "";
     if (storyData.storyCastState === "loading") {
         storyCastStatus.textContent = "Creating story cast from selected characters...";
+        renderSelectedCharacterViewer();
         return;
     }
     if (storyData.storyCastState === "error") {
         storyCastStatus.textContent =
             `Could not prepare story cast: ${storyData.storyCastError || "Unknown error."}`;
+        renderSelectedCharacterViewer();
         return;
     }
     if (!Array.isArray(storyData.story_characters) || storyData.story_characters.length === 0) {
-        storyCastStatus.textContent = "Select a theme and characters first.";
+        storyCastStatus.textContent = "Select a theme first.";
+        renderSelectedCharacterViewer();
         return;
     }
+    const selected = getSelectedStoryCharacters();
+    const selectedCount = selected.length;
+    const targetCountText = selectedCount >= 2 ? `${selectedCount} selected.` : `${selectedCount} selected. Pick at least 2.`;
+    const generatingText =
+        storyData.characterReferencesState === "loading"
+            ? " Generating selected character references..."
+            : storyData.characterReferencesState === "error"
+              ? ` Image generation issue: ${storyData.characterReferencesError || "unknown error"}.`
+              : selectedCount > 0
+                ? " References will be generated only for selected characters."
+              : "";
+    storyCastStatus.textContent = `Cast ready: ${storyData.story_characters.length} characters. ${targetCountText}${generatingText}`;
 
-    storyCastStatus.textContent = `Cast ready: ${storyData.story_characters.length} characters.`;
+    if (nextButtons[3]) {
+        nextButtons[3].disabled = selectedCount < 2;
+    }
+    const selectedNameText = document.getElementById("selected-name-text");
+    if (selectedNameText) {
+        selectedNameText.textContent = String(selectedCount);
+    }
+
     storyData.story_characters.forEach((character) => {
         const listItem = document.createElement("li");
         listItem.className = "story-cast-item";
-        const role = character.is_child ? "Child Hero" : "Supporting Character";
-        listItem.textContent = `${character.name} (${role}) - ${character.description}`;
+        const isSelected = storyData.selected_story_character_names.some(
+            (value) => normalizeSuggestionKey(value) === normalizeSuggestionKey(character.name)
+        );
+        if (isSelected) {
+            listItem.classList.add("selected");
+            listItem.setAttribute("aria-selected", "true");
+        } else {
+            listItem.setAttribute("aria-selected", "false");
+        }
+
+        const row = document.createElement("div");
+        row.className = "story-cast-row";
+
+        const thumb = document.createElement("div");
+        thumb.className = "story-cast-thumb";
+        if (character.image_b64) {
+            const img = document.createElement("img");
+            img.alt = `${character.name} reference`;
+            img.src = `data:${character.mime_type || "image/png"};base64,${character.image_b64}`;
+            thumb.appendChild(img);
+        } else {
+            const initials = (character.name || "?")
+                .split(" ")
+                .map((part) => part.slice(0, 1))
+                .join("")
+                .slice(0, 2)
+                .toUpperCase();
+            thumb.textContent = initials || "?";
+        }
+
+        const content = document.createElement("div");
+        const title = document.createElement("div");
+        title.className = "story-cast-title";
+        title.textContent = `${character.name}${character.is_child ? " (Child Hero)" : ""}`;
+        const subtitle = document.createElement("p");
+        subtitle.className = "story-cast-subtitle";
+        const visualSummary = getCharacterVisualSummary(character);
+        if (!isSelected) {
+            subtitle.textContent = `${character.description} - select this character to generate a reference image.`;
+        } else if (!character.image_b64) {
+            subtitle.textContent =
+                storyData.characterReferencesState === "loading"
+                    ? `${character.description} - image generating...`
+                    : `${character.description} - selected, reference pending generation.`;
+        } else if (!visualSummary) {
+            subtitle.textContent =
+                storyData.characterReferencesState === "loading"
+                    ? `${character.description} - analyzing visual features...`
+                    : `${character.description} - reference ready, visual profile pending.`;
+        } else {
+            subtitle.textContent = `${character.description} - ${visualSummary}`;
+        }
+
+        content.appendChild(title);
+        content.appendChild(subtitle);
+        row.appendChild(thumb);
+        row.appendChild(content);
+        listItem.appendChild(row);
+
+        listItem.onclick = () => {
+            const key = normalizeSuggestionKey(character.name);
+            const exists = storyData.selected_story_character_names.findIndex(
+                (value) => normalizeSuggestionKey(value) === key
+            );
+            if (exists >= 0) {
+                storyData.selected_story_character_names.splice(exists, 1);
+            } else {
+                storyData.selected_story_character_names.push(character.name);
+                if (!storyData.active_selected_story_character_name) {
+                    storyData.active_selected_story_character_name = character.name;
+                }
+            }
+            resetFinalSubmitConfirmation();
+            renderStoryCastPreview();
+            clearError(3);
+        };
+
         storyCastList.appendChild(listItem);
     });
+    renderSelectedCharacterViewer();
 }
 
 async function prepareStoryCast(force = false) {
-    if (!storyData.story_theme || !storyData.selected_character_descriptions.length) {
+    if (!storyData.story_theme) {
         return false;
     }
 
@@ -1132,6 +1929,8 @@ async function prepareStoryCast(force = false) {
     storyData.storyCastState = "loading";
     storyData.storyCastError = null;
     storyData.story_characters = [];
+    storyData.selected_story_character_names = [];
+    storyData.active_selected_story_character_name = "";
     storyData.child_character = null;
     storyData.storyCastSourceKey = "";
     storyData.characterReferencesState = "idle";
@@ -1143,18 +1942,25 @@ async function prepareStoryCast(force = false) {
     clearError(3);
 
     try {
+        const selectedCharacterIdeas =
+            Array.isArray(storyData.character_suggestions) && storyData.character_suggestions.length > 0
+                ? storyData.character_suggestions.slice(0, 8)
+                : ["Friendly guide", "Curious friend", "Helpful companion"];
         const data = await postApi("/story/cast/prepare", {
             child_name: storyData.child_name,
             learning_objective: storyData.learning_objective,
             theme: storyData.story_theme,
             personality_keywords: storyData.personality_keywords,
-            selected_character_ideas: storyData.selected_character_descriptions,
+            selected_character_ideas: selectedCharacterIdeas,
             child_profile_text: storyData.child_profile_input,
             ...getRequestContext(),
         });
 
         storyData.child_character = data.child_character || null;
         storyData.story_characters = Array.isArray(data.story_characters) ? data.story_characters : [];
+        storyData.selected_story_character_names = [];
+        storyData.active_selected_story_character_name = "";
+        resetFinalSubmitConfirmation();
         storyData.storyCastState = "success";
         storyData.storyCastError = null;
         storyData.storyCastSourceKey = sourceKey;
@@ -1164,15 +1970,15 @@ async function prepareStoryCast(force = false) {
             storyData.selected_character_description = storyData.child_character.description || "";
             const selectedNameText = document.getElementById("selected-name-text");
             if (selectedNameText) {
-                selectedNameText.textContent = storyData.selected_character_name;
+                selectedNameText.textContent = String(storyData.selected_story_character_names.length);
             }
         }
 
         if (nextButtons[3]) {
-            nextButtons[3].disabled = !(storyData.story_characters.length >= 2);
+            nextButtons[3].disabled = storyData.selected_story_character_names.length < 2;
         }
         renderStoryCastPreview();
-        return storyData.story_characters.length >= 2;
+        return storyData.selected_story_character_names.length >= 2;
     } catch (error) {
         storyData.storyCastState = "error";
         storyData.storyCastError = error.message || "Unknown cast preparation error.";
@@ -1186,15 +1992,18 @@ async function prepareStoryCast(force = false) {
 }
 
 async function generateCharacterReferencesInBackground(force = false) {
-    if (!Array.isArray(storyData.story_characters) || storyData.story_characters.length < 2) {
+    const selectedCharacters = getSelectedStoryCharacters();
+    if (!Array.isArray(selectedCharacters) || selectedCharacters.length < 2) {
         return;
     }
     if (storyData.characterReferencesState === "loading") {
         return;
     }
 
-    const needGeneration = storyData.story_characters.some((character) => !character.image_b64);
-    if (!force && !needGeneration) {
+    const needsPreparation = selectedCharacters.some(
+        (character) => !character.image_b64 || !character.visual_profile
+    );
+    if (!force && !needsPreparation) {
         storyData.characterReferencesState = "success";
         storyData.characterReferencesError = null;
         if (currentStep === 5) {
@@ -1210,30 +2019,51 @@ async function generateCharacterReferencesInBackground(force = false) {
     if (currentStep === 5) {
         updateReviewDetails();
     }
+    if (currentStep === 3) {
+        renderStoryCastPreview();
+    }
 
     try {
-        for (const character of storyData.story_characters) {
-            if (character.image_b64) {
-                continue;
+        for (const character of selectedCharacters) {
+            if (!character.image_b64) {
+                const prompt =
+                    `Create a single character portrait for a children's story. ` +
+                    `Character: ${character.name}. Description: ${character.description}. ` +
+                    `One character only, clear pose, plain background.`;
+                const imageResponse = await postApi("/image/generate", {
+                    description: prompt,
+                    ...getRequestContext(),
+                });
+                if (!imageResponse?.b64_json) {
+                    throw new Error(`Image generation failed for ${character.name}.`);
+                }
+                character.image_b64 = imageResponse.b64_json;
+                character.mime_type = imageResponse.mime_type || "image/png";
             }
-            const prompt =
-                `Create a single character portrait for a children's story. ` +
-                `Character: ${character.name}. Description: ${character.description}. ` +
-                `One character only, clear pose, plain background.`;
-            const imageResponse = await postApi("/image/generate", {
-                description: prompt,
-                ...getRequestContext(),
-            });
-            if (!imageResponse?.b64_json) {
-                throw new Error(`Image generation failed for ${character.name}.`);
+
+            if (!character.visual_profile && character.image_b64) {
+                try {
+                    await analyzeCharacterImage(character);
+                } catch (analysisError) {
+                    const fallbackPrompt =
+                        `Keep ${character.name} visually consistent across pages, ` +
+                        `with the same clothing, colors, and defining features as the reference image.`;
+                    character.visual_profile = {
+                        summary: character.description || `${character.name} visual profile`,
+                        consistency_prompt: fallbackPrompt,
+                    };
+                    console.warn(`Image understanding failed for ${character.name}:`, analysisError);
+                }
             }
-            character.image_b64 = imageResponse.b64_json;
-            character.mime_type = imageResponse.mime_type || "image/png";
+
+            if (currentStep === 3) {
+                renderStoryCastPreview();
+            }
         }
 
         const childRef =
-            storyData.story_characters.find((char) => char.is_child && char.image_b64) ||
-            storyData.story_characters.find((char) => char.image_b64);
+            selectedCharacters.find((char) => char.is_child && char.image_b64) ||
+            selectedCharacters.find((char) => char.image_b64);
         if (childRef) {
             storyData.generated_character_image_b64 = childRef.image_b64;
             storyData.generated_character_image_mime = childRef.mime_type || "image/png";
@@ -1249,6 +2079,9 @@ async function generateCharacterReferencesInBackground(force = false) {
     } finally {
         if (currentStep === 5) {
             updateReviewDetails();
+        }
+        if (currentStep === 3) {
+            renderStoryCastPreview();
         }
     }
 }
@@ -1276,7 +2109,8 @@ async function fetchNameSuggestions() {
 }
 
 async function fetchPlotSuggestions() {
-    if (!storyData.story_characters || storyData.story_characters.length < 2) {
+    const selectedCharacters = getSelectedStoryCharacters();
+    if (!selectedCharacters || selectedCharacters.length < 2) {
         showError(4, "Cannot fetch plots without a prepared story cast.");
         return;
     }
@@ -1286,7 +2120,7 @@ async function fetchPlotSuggestions() {
         const data = await postApi("/plot/suggest-from-cast", {
             learning_objective: storyData.learning_objective,
             theme: storyData.story_theme,
-            story_characters: storyData.story_characters.map((character) => ({
+            story_characters: selectedCharacters.map((character) => ({
                 name: character.name,
                 description: character.description,
                 is_child: !!character.is_child,
@@ -1387,7 +2221,7 @@ function displaySuggestions(type, suggestions) {
     const nextButton = nextButtons[currentStep];
     if (selectedValue && nextButton) {
         if (currentStep === 2) {
-            nextButton.disabled = !(storyData.story_theme && storyData.selected_character_descriptions.length > 0);
+            nextButton.disabled = !storyData.story_theme;
         } else {
             nextButton.disabled = false;
         }
@@ -1439,7 +2273,7 @@ function selectSuggestion(type, selectedListItem, value) {
             nextButtons[4].disabled = true;
         }
         if (nextButtons[2]) {
-            nextButtons[2].disabled = !(storyData.story_theme && storyData.selected_character_descriptions.length > 0);
+            nextButtons[2].disabled = !storyData.story_theme;
         }
         clearError(currentStep);
         return;
@@ -1463,7 +2297,7 @@ function selectSuggestion(type, selectedListItem, value) {
     const resetName = () => {
         storyData.selected_character_name = "";
         storyData.name_suggestions = [];
-        document.getElementById("selected-name-text").textContent = "None";
+        document.getElementById("selected-name-text").textContent = "0";
         if (nextButtons[3]) {
             nextButtons[3].disabled = true;
         }
@@ -1484,6 +2318,7 @@ function selectSuggestion(type, selectedListItem, value) {
     if (type === "theme") {
         if (storyData.story_theme !== value) {
             storyData.story_theme = value;
+            resetFinalSubmitConfirmation();
             resetName();
             resetPlot();
             storyData.story_characters = [];
@@ -1511,6 +2346,7 @@ function selectSuggestion(type, selectedListItem, value) {
     if (type === "plot") {
         if (storyData.selected_plot !== value) {
             storyData.selected_plot = value;
+            resetFinalSubmitConfirmation();
             resetMainStoryCharactersState();
         }
         selectedTextElement.textContent = truncate(value);
@@ -1518,7 +2354,7 @@ function selectSuggestion(type, selectedListItem, value) {
 
     if (nextButton) {
         if (currentStep === 2) {
-            nextButton.disabled = !(storyData.story_theme && storyData.selected_character_descriptions.length > 0);
+            nextButton.disabled = !storyData.story_theme;
         } else {
             nextButton.disabled = false;
         }
@@ -1531,13 +2367,14 @@ function updateReviewDetails() {
     clearError(5);
 
     const cast = Array.isArray(storyData.story_characters) ? storyData.story_characters : [];
-    const castNames = cast.map((character) => character.name).filter(Boolean);
+    const selectedCast = getSelectedStoryCharacters();
+    const castNames = selectedCast.map((character) => character.name).filter(Boolean);
     storyData.main_story_characters = castNames;
 
     document.getElementById("review-child-name").textContent = storyData.child_name;
     document.getElementById("review-learning-objective").textContent = storyData.learning_objective;
     document.getElementById("review-character-description").textContent =
-        storyData.selected_character_descriptions.join(", ");
+        selectedCast.map((character) => character.name).join(", ");
     document.getElementById("review-character-name").textContent =
         storyData.child_character?.name || storyData.selected_character_name;
     document.getElementById("review-plot").textContent = storyData.selected_plot;
@@ -1546,10 +2383,17 @@ function updateReviewDetails() {
 
     if (reviewMainCharacters) {
         reviewMainCharacters.innerHTML = "";
-        cast.forEach((character) => {
+        selectedCast.forEach((character) => {
             const listItem = document.createElement("li");
             const hasImage = !!character.image_b64;
-            listItem.textContent = hasImage ? `${character.name} (reference ready)` : `${character.name} (pending)`;
+            const hasProfile = !!getCharacterVisualSummary(character);
+            if (!hasImage) {
+                listItem.textContent = `${character.name} (reference pending)`;
+            } else if (!hasProfile) {
+                listItem.textContent = `${character.name} (image ready, analyzing features)`;
+            } else {
+                listItem.textContent = `${character.name} (reference + visual profile ready)`;
+            }
             reviewMainCharacters.appendChild(listItem);
         });
     }
@@ -1565,7 +2409,8 @@ function updateReviewDetails() {
             reviewMainCharactersStatus.textContent =
                 `Reference image generation issue: ${storyData.characterReferencesError || "Unknown error."}`;
         } else if (cast.length > 0) {
-            reviewMainCharactersStatus.textContent = `${cast.length} characters ready for the story.`;
+            reviewMainCharactersStatus.textContent =
+                `${cast.length} characters available, ${selectedCast.length} selected for the story.`;
         } else {
             reviewMainCharactersStatus.textContent = "Story cast not ready yet.";
         }
@@ -1606,14 +2451,28 @@ function updateReviewDetails() {
         characterImagePreview.style.display = "none";
     }
 
-    generationStatus.textContent = "";
-    generateBookButton.disabled = !(
+    renderFinalConfirmation(selectedCast);
+
+    const submitReady =
         storyData.child_name &&
-        storyData.story_characters &&
-        storyData.story_characters.length >= 2 &&
+        selectedCast &&
+        selectedCast.length >= 2 &&
         storyData.selected_plot &&
-        storyData.characterReferencesState !== "loading"
-    );
+        storyData.characterReferencesState !== "loading";
+    const submitConfirmed = !!(finalSubmitCheck && finalSubmitCheck.checked);
+
+    if (finalSubmitHint) {
+        if (!submitReady) {
+            finalSubmitHint.textContent = "Wait for selected character references and analysis to finish before submitting.";
+        } else if (!submitConfirmed) {
+            finalSubmitHint.textContent = "Check the confirmation box to submit and generate the book.";
+        } else {
+            finalSubmitHint.textContent = "Confirmed. Submit is ready.";
+        }
+    }
+
+    generationStatus.textContent = "";
+    generateBookButton.disabled = !(submitReady && submitConfirmed);
     isGeneratingBook = false;
 }
 
@@ -1701,8 +2560,13 @@ async function generateBook() {
         showError(5, "Cannot generate book: Missing child details or selected plot.");
         return;
     }
-    if (!Array.isArray(storyData.story_characters) || storyData.story_characters.length < 2) {
-        showError(5, "Cannot generate book: Story cast must include at least 2 characters.");
+    const selectedCharacters = getSelectedStoryCharacters();
+    if (!Array.isArray(selectedCharacters) || selectedCharacters.length < 2) {
+        showError(5, "Cannot generate book: Select at least 2 story characters in Step 3.");
+        return;
+    }
+    if (!finalSubmitCheck || !finalSubmitCheck.checked) {
+        showError(5, "Confirm the final review checkbox before submitting.");
         return;
     }
 
@@ -1714,13 +2578,16 @@ async function generateBook() {
     clearError(5);
     generateBookButton.disabled = true;
     document.getElementById("btn-step-5-back").disabled = true;
+    if (finalSubmitCheck) {
+        finalSubmitCheck.disabled = true;
+    }
     if (downloadPdfButton) {
         downloadPdfButton.disabled = true;
     }
     showLoadingOverlay("Generating your story book...");
 
     await generateCharacterReferencesInBackground(true);
-    const missingCharacterRefs = storyData.story_characters.some((character) => !character.image_b64);
+    const missingCharacterRefs = selectedCharacters.some((character) => !character.image_b64);
     if (missingCharacterRefs) {
         const warningMessage = (
             `Some character references are missing. Continuing without them. ${storyData.characterReferencesError || ""}`
@@ -1734,9 +2601,9 @@ async function generateBook() {
 
     const childCharacter =
         storyData.child_character ||
-        storyData.story_characters.find((character) => character.is_child) ||
-        storyData.story_characters[0];
-    const castDescription = storyData.story_characters
+        selectedCharacters.find((character) => character.is_child) ||
+        selectedCharacters[0];
+    const castDescription = selectedCharacters
         .map((character) => `${character.name}: ${character.description}`)
         .join("; ");
 
@@ -1749,37 +2616,52 @@ async function generateBook() {
         theme: storyData.story_theme,
         personality_keywords: storyData.personality_keywords,
         character_image_b64: childCharacter?.image_b64 || storyData.generated_character_image_b64,
-        story_characters: storyData.story_characters.map((character) => ({
+        story_characters: selectedCharacters.map((character) => ({
             name: character.name,
             description: character.description,
             is_child: !!character.is_child,
             image_b64: character.image_b64,
             mime_type: character.mime_type || "image/png",
+            visual_profile: character.visual_profile || undefined,
         })),
         ...getRequestContext(),
     };
 
     try {
-        setBookLoadingStage(0, "Generating story text...", "Creating your personalized story draft.");
-        const responseData = await postApi("/book/generate", payload);
-
-        if (Array.isArray(responseData.pages) && responseData.pages.length > 0) {
-            setBookLoadingStage(3, "Finalizing your book...", "Almost done. Preparing your pages.");
-            storyData.bookPages = responseData.pages;
-            storyData.currentPageIndex = 0;
-            if (downloadPdfButton) {
-                downloadPdfButton.disabled = false;
-            }
-            hideLoadingOverlay();
-            goToStep(6);
-        } else {
-            throw new Error("Received invalid book data from server.");
+        setBookLoadingStage(0, "Queueing your book...", "Submitting your request for background generation.");
+        const responseData = await postApi("/book/jobs", payload);
+        const job = responseData?.job;
+        if (!job?.job_id) {
+            throw new Error("Server did not return a valid job id.");
         }
+
+        rememberBookJobId(job.job_id);
+        activeBookJobId = job.job_id;
+        await refreshYourBooks();
+
+        hideLoadingOverlay();
+        generateBookButton.disabled = false;
+        document.getElementById("btn-step-5-back").disabled = false;
+        if (finalSubmitCheck) {
+            finalSubmitCheck.disabled = false;
+        }
+        isGeneratingBook = false;
+
+        if (settingsStatus) {
+            settingsStatus.textContent = "Book queued. You can continue editing while it runs.";
+            settingsStatus.style.color = "#2f6f2f";
+        }
+
+        resetFinalSubmitConfirmation();
+        goToStep(1);
     } catch (error) {
         hideLoadingOverlay();
         showError(5, `Failed to generate book: ${error.message}`);
         generateBookButton.disabled = false;
         document.getElementById("btn-step-5-back").disabled = false;
+        if (finalSubmitCheck) {
+            finalSubmitCheck.disabled = false;
+        }
         isGeneratingBook = false;
     }
 }
@@ -1950,6 +2832,8 @@ function startOver() {
     storyData.selected_character_description = "";
     storyData.child_character = null;
     storyData.story_characters = [];
+    storyData.selected_story_character_names = [];
+    storyData.active_selected_story_character_name = "";
     storyData.storyCastState = "idle";
     storyData.storyCastError = null;
     storyData.storyCastSourceKey = "";
@@ -1967,6 +2851,7 @@ function startOver() {
     storyData.currentPageIndex = 0;
 
     resetCharacterPreviewState();
+    closeCharacterInspector();
 
     document.getElementById("form-basics").reset();
     childProfileInput.value = "";
@@ -1986,7 +2871,7 @@ function startOver() {
             suggestionsContainer.innerHTML = "";
         }
         if (selectedTextElement) {
-            selectedTextElement.textContent = "None";
+            selectedTextElement.textContent = type === "name" ? "0" : "None";
         }
     });
 
@@ -2002,12 +2887,29 @@ function startOver() {
     if (reviewMainCharactersStatus) {
         reviewMainCharactersStatus.textContent = "";
     }
+    if (finalHistoryText) {
+        finalHistoryText.textContent = "";
+    }
+    if (finalCharactersStatus) {
+        finalCharactersStatus.textContent = "";
+    }
+    if (finalCharactersGrid) {
+        finalCharactersGrid.innerHTML = "";
+    }
+    if (finalSubmitHint) {
+        finalSubmitHint.textContent = "";
+    }
+    resetFinalSubmitConfirmation();
+    if (finalSubmitCheck) {
+        finalSubmitCheck.disabled = false;
+    }
     if (storyCastList) {
         storyCastList.innerHTML = "";
     }
     if (storyCastStatus) {
         storyCastStatus.textContent = "";
     }
+    renderSelectedCharacterViewer();
 
     hideLoadingOverlay();
     generateBookButton.disabled = true;
@@ -2073,5 +2975,32 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     await loadSettingsOptions();
+    if (refreshBooksButton) {
+        refreshBooksButton.addEventListener("click", () => {
+            refreshYourBooks();
+        });
+    }
+    if (finalSubmitCheck) {
+        finalSubmitCheck.addEventListener("change", () => {
+            clearError(5);
+            updateReviewDetails();
+        });
+    }
+    if (characterInspectorClose) {
+        characterInspectorClose.addEventListener("click", closeCharacterInspector);
+    }
+    if (characterInspectorModal) {
+        characterInspectorModal.addEventListener("click", (event) => {
+            if (event.target === characterInspectorModal) {
+                closeCharacterInspector();
+            }
+        });
+    }
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && characterInspectorModal?.classList.contains("is-open")) {
+            closeCharacterInspector();
+        }
+    });
     startOver();
+    await refreshYourBooks();
 });

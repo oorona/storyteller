@@ -6,8 +6,10 @@ import json
 import logging
 import traceback
 import threading
+import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from flask import Flask, jsonify, request, send_from_directory, send_file
 from flask_cors import CORS
@@ -23,6 +25,7 @@ from provider_service import (
     edit_image_based_on_prompt,
     extract_child_profile,
     generate_image,
+    understand_image,
     generate_image_with_references,
     generate_story,
     get_character_suggestions,
@@ -49,6 +52,11 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__, static_folder="../frontend", static_url_path="/")
 CORS(app)
 
+BOOK_JOBS_DIR = Path(__file__).resolve().parent / "generated" / "books"
+BOOK_JOBS_DIR.mkdir(parents=True, exist_ok=True)
+BOOK_JOBS_LOCK = threading.Lock()
+BOOK_JOBS: Dict[str, Dict[str, Any]] = {}
+
 
 def parse_provider_context(data: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     provider = normalize_provider(data.get("provider") if isinstance(data, dict) else None)
@@ -72,6 +80,8 @@ def handle_service_response(result: Dict[str, Any], success_key: str):
         elif error_code in {"billing_error"}:
             status_code = 402
         elif error_code in {"invalid_request", "invalid_provider"}:
+            status_code = 400
+        elif error_code in {"unsupported_operation"}:
             status_code = 400
         elif error_code in {"invalid_response", "generic_edit_error"}:
             status_code = 502
@@ -108,6 +118,72 @@ def _character_name_keys(name: str) -> set[str]:
     return {key for key in keys if key}
 
 
+def _to_clean_string_list(value: Any) -> List[str]:
+    if isinstance(value, list):
+        source_items = value
+    elif isinstance(value, str):
+        source_items = re.split(r"[,\n;]+", value)
+    else:
+        return []
+
+    cleaned: List[str] = []
+    for item in source_items:
+        text = str(item).strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return cleaned[:16]
+
+
+def _normalize_visual_profile(raw_value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw_value, dict):
+        return None
+
+    normalized: Dict[str, Any] = {}
+    summary = str(raw_value.get("summary") or raw_value.get("profile_summary") or "").strip()
+    if summary:
+        normalized["summary"] = summary[:800]
+
+    for key in ("appearance", "clothing", "colors", "accessories", "distinctive_features", "style_notes"):
+        values = _to_clean_string_list(raw_value.get(key))
+        if values:
+            normalized[key] = values
+
+    consistency_prompt = str(raw_value.get("consistency_prompt", "")).strip()
+    if consistency_prompt:
+        normalized["consistency_prompt"] = consistency_prompt[:1200]
+
+    return normalized or None
+
+
+def _visual_profile_consistency_notes(character: Dict[str, Any]) -> str:
+    visual_profile = _normalize_visual_profile(character.get("visual_profile"))
+    if not visual_profile:
+        return ""
+
+    chunks: List[str] = []
+    summary = str(visual_profile.get("summary", "")).strip()
+    if summary:
+        chunks.append(summary)
+
+    for key, label in (
+        ("appearance", "appearance"),
+        ("clothing", "clothing"),
+        ("colors", "colors"),
+        ("accessories", "accessories"),
+        ("distinctive_features", "features"),
+        ("style_notes", "style"),
+    ):
+        values = visual_profile.get(key)
+        if isinstance(values, list) and values:
+            chunks.append(f"{label}: {', '.join(str(item).strip() for item in values[:6] if str(item).strip())}")
+
+    consistency_prompt = str(visual_profile.get("consistency_prompt", "")).strip()
+    if consistency_prompt:
+        chunks.append(f"consistency: {consistency_prompt}")
+
+    return " | ".join(chunk for chunk in chunks if chunk)[:1800]
+
+
 def normalize_story_characters(raw_value: Any):
     if not isinstance(raw_value, list):
         return []
@@ -127,15 +203,17 @@ def normalize_story_characters(raw_value: Any):
         if any(key in seen_keys for key in name_keys):
             continue
         seen_keys.update(name_keys)
-        normalized.append(
-            {
-                "name": name,
-                "description": description,
-                "is_child": bool(item.get("is_child", False)),
-                "image_b64": str(item.get("image_b64", "")).strip(),
-                "mime_type": str(item.get("mime_type", "image/png")).strip() or "image/png",
-            }
-        )
+        character_payload = {
+            "name": name,
+            "description": description,
+            "is_child": bool(item.get("is_child", False)),
+            "image_b64": str(item.get("image_b64", "")).strip(),
+            "mime_type": str(item.get("mime_type", "image/png")).strip() or "image/png",
+        }
+        visual_profile = _normalize_visual_profile(item.get("visual_profile"))
+        if visual_profile:
+            character_payload["visual_profile"] = visual_profile
+        normalized.append(character_payload)
     return normalized
 
 
@@ -145,6 +223,117 @@ def _safe_filename(value: str) -> str:
     if not sanitized:
         sanitized = "story_book"
     return sanitized[:80]
+
+
+def _utc_now_iso() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+
+def _book_job_path(job_id: str) -> Path:
+    return BOOK_JOBS_DIR / f"{job_id}.json"
+
+
+def _persist_book_job(job: Dict[str, Any]) -> None:
+    job_id = str(job.get("job_id", "")).strip()
+    if not job_id:
+        return
+
+    path = _book_job_path(job_id)
+    tmp_path = path.with_suffix(".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as job_file:
+        json.dump(job, job_file, ensure_ascii=False)
+    tmp_path.replace(path)
+
+
+def _load_book_job_from_disk(job_id: str) -> Optional[Dict[str, Any]]:
+    path = _book_job_path(job_id)
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as job_file:
+            payload = json.load(job_file)
+            if isinstance(payload, dict):
+                return payload
+    except Exception as exc:
+        logger.warning("Could not load book job file %s: %s", path, exc)
+    return None
+
+
+def _book_job_summary(job: Dict[str, Any]) -> Dict[str, Any]:
+    pages = job.get("pages")
+    page_count = len(pages) if isinstance(pages, list) else int(job.get("page_count", 0) or 0)
+    progress_current = int(job.get("progress_current", 0) or 0)
+    progress_total = int(job.get("progress_total", 0) or 0)
+    progress_percent = int(job.get("progress_percent", 0) or 0)
+    return {
+        "job_id": job.get("job_id"),
+        "status": job.get("status", "unknown"),
+        "stage": job.get("stage", ""),
+        "provider": job.get("provider", ""),
+        "child_name": job.get("child_name", ""),
+        "theme": job.get("theme", ""),
+        "plot_choice": job.get("plot_choice", ""),
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
+        "completed_at": job.get("completed_at"),
+        "error": job.get("error", ""),
+        "warning": job.get("warning", ""),
+        "page_count": page_count,
+        "progress_current": progress_current,
+        "progress_total": progress_total,
+        "progress_percent": progress_percent,
+    }
+
+
+def _get_book_job(job_id: str) -> Optional[Dict[str, Any]]:
+    with BOOK_JOBS_LOCK:
+        in_memory = BOOK_JOBS.get(job_id)
+        if in_memory:
+            return in_memory
+
+    from_disk = _load_book_job_from_disk(job_id)
+    if not from_disk:
+        return None
+
+    with BOOK_JOBS_LOCK:
+        BOOK_JOBS[job_id] = from_disk
+    return from_disk
+
+
+def _list_book_jobs() -> List[Dict[str, Any]]:
+    jobs_by_id: Dict[str, Dict[str, Any]] = {}
+
+    with BOOK_JOBS_LOCK:
+        for job_id, payload in BOOK_JOBS.items():
+            if isinstance(payload, dict):
+                jobs_by_id[job_id] = payload
+
+    for job_file in BOOK_JOBS_DIR.glob("*.json"):
+        job_id = job_file.stem
+        if job_id in jobs_by_id:
+            continue
+        payload = _load_book_job_from_disk(job_id)
+        if payload:
+            jobs_by_id[job_id] = payload
+
+    jobs = list(jobs_by_id.values())
+    jobs.sort(key=lambda item: str(item.get("created_at", "")), reverse=True)
+    return jobs
+
+
+def _save_book_job(job: Dict[str, Any]) -> None:
+    job_id = str(job.get("job_id", "")).strip()
+    if not job_id:
+        return
+
+    job["updated_at"] = _utc_now_iso()
+    with BOOK_JOBS_LOCK:
+        BOOK_JOBS[job_id] = job
+    _persist_book_job(job)
+
+
+def _truthy_query_param(value: Optional[str]) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _draw_wrapped_text(
@@ -526,6 +715,35 @@ def create_image():
     return handle_service_response(image_result, "b64_json")
 
 
+@app.route("/api/image/understand", methods=["POST"])
+def understand_uploaded_image():
+    data = request.json
+    if not data:
+        return jsonify({"error": "Invalid JSON payload"}), 400
+
+    image_b64 = str(data.get("image_b64", "")).strip()
+    if not image_b64:
+        return jsonify({"error": "Missing required field: image_b64"}), 400
+
+    mime_type = str(data.get("mime_type", "image/png")).strip() or "image/png"
+    character_name = str(data.get("character_name", "")).strip()
+    character_description = str(data.get("character_description", "")).strip()
+
+    provider, runtime_settings = parse_provider_context(data)
+    if not is_provider_ready(provider):
+        return jsonify({"error": f"Provider '{provider}' is not available."}), 503
+
+    result = understand_image(
+        provider,
+        image_b64,
+        mime_type,
+        character_name,
+        character_description,
+        runtime_settings=runtime_settings,
+    )
+    return handle_service_response(result, "visual_profile")
+
+
 def process_section_thread(
     section_index: int,
     section_text: str,
@@ -534,6 +752,7 @@ def process_section_thread(
     provider: str,
     runtime_settings: Dict[str, Any],
     results_list,
+    completion_callback: Optional[Callable[[], None]] = None,
 ):
     generation_trace: Dict[str, Any] = {
         "segment_index": section_index,
@@ -581,12 +800,27 @@ def process_section_thread(
             str(character.get("name", "")).strip() for character in involved_characters
         ]
 
+        prompt_characters = []
+        consistency_notes_by_name: Dict[str, str] = {}
+        for character in involved_characters:
+            character_copy = dict(character)
+            notes = _visual_profile_consistency_notes(character)
+            if notes:
+                base_description = str(character_copy.get("description", "")).strip()
+                character_copy["description"] = (
+                    f"{base_description} Visual consistency notes: {notes}"
+                ).strip()
+                consistency_notes_by_name[str(character_copy.get("name", "")).strip()] = notes
+            prompt_characters.append(character_copy)
+        if consistency_notes_by_name:
+            generation_trace["visual_consistency_notes"] = consistency_notes_by_name
+
         logger.info(f"Thread-{section_index + 1}: Creating character-aware image prompt...")
         img_prompt_result = create_image_prompt_for_section_with_characters(
             provider,
             section_text,
             theme,
-            involved_characters,
+            prompt_characters,
             runtime_settings=runtime_settings,
         )
         if "error" in img_prompt_result:
@@ -640,6 +874,12 @@ def process_section_thread(
             "error": str(exc),
             "generation_trace": generation_trace,
         }
+    finally:
+        if completion_callback:
+            try:
+                completion_callback()
+            except Exception as callback_exc:
+                logger.warning("Section completion callback failed: %s", callback_exc)
 
 
 @app.route("/api/book/generate", methods=["POST"])
@@ -652,6 +892,23 @@ def create_book():
     if not is_provider_ready(provider):
         return jsonify({"error": f"Provider '{provider}' is not available."}), 503
 
+    try:
+        result = _generate_book_content(
+            data,
+            provider,
+            runtime_settings,
+        )
+        return jsonify(result), 200
+    except ValueError as exc:
+        logger.warning("Book generation validation failed: %s", exc)
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.error("Error during book generation: %s", exc)
+        logger.error(traceback.format_exc())
+        return jsonify({"error": "Book generation failed: An internal error occurred."}), 500
+
+
+def _prepare_book_generation_input(data: Dict[str, Any]) -> Dict[str, Any]:
     required_fields = [
         "child_name",
         "plot_choice",
@@ -660,7 +917,7 @@ def create_book():
     ]
     missing_fields = [field for field in required_fields if not data.get(field)]
     if missing_fields:
-        return jsonify({"error": f"Missing required fields: {', '.join(missing_fields)}"}), 400
+        raise ValueError(f"Missing required fields: {', '.join(missing_fields)}")
 
     child_name = str(data["child_name"]).strip()
     plot_choice = str(data["plot_choice"]).strip()
@@ -686,7 +943,7 @@ def create_book():
             ]
 
     if len(story_characters) < 2:
-        return jsonify({"error": "At least 2 story_characters are required to generate the book."}), 400
+        raise ValueError("At least 2 story_characters are required to generate the book.")
 
     main_character = story_characters[0]
     character_name = main_character["name"]
@@ -694,109 +951,310 @@ def create_book():
         f"{character['name']}: {character['description']}" for character in story_characters
     )
 
-    try:
-        logger.info("Step 1/4: Generating full story...")
-        story_result = generate_story(
-            provider,
-            child_name,
-            character_name,
-            character_description,
-            plot_choice,
-            learning_objective,
-            theme,
-            personality_keywords,
-            runtime_settings=runtime_settings,
+    return {
+        "child_name": child_name,
+        "plot_choice": plot_choice,
+        "learning_objective": learning_objective,
+        "theme": theme,
+        "personality_keywords": personality_keywords,
+        "story_characters": story_characters,
+        "character_name": character_name,
+        "character_description": character_description,
+    }
+
+
+def _generate_book_content(
+    data: Dict[str, Any],
+    provider: str,
+    runtime_settings: Dict[str, Any],
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
+    prepared = _prepare_book_generation_input(data)
+
+    child_name = prepared["child_name"]
+    plot_choice = prepared["plot_choice"]
+    learning_objective = prepared["learning_objective"]
+    theme = prepared["theme"]
+    personality_keywords = prepared["personality_keywords"]
+    story_characters = prepared["story_characters"]
+    character_name = prepared["character_name"]
+    character_description = prepared["character_description"]
+
+    def _emit_progress(stage: str, current: int, total: int) -> None:
+        if not progress_callback:
+            return
+        safe_total = max(1, int(total))
+        safe_current = max(0, min(int(current), safe_total))
+        percent = int(round((safe_current / safe_total) * 100))
+        progress_callback(
+            {
+                "stage": stage,
+                "progress_current": safe_current,
+                "progress_total": safe_total,
+                "progress_percent": max(0, min(percent, 100)),
+            }
         )
-        if "error" in story_result:
-            raise Exception(f"Story generation failed: {story_result['error']}")
 
-        full_story_text = story_result["story_text"]
+    pre_section_total = 3  # story + sectioning + finalize
+    _emit_progress("story", 0, pre_section_total)
+    logger.info("Step 1/4: Generating full story...")
+    story_result = generate_story(
+        provider,
+        child_name,
+        character_name,
+        character_description,
+        plot_choice,
+        learning_objective,
+        theme,
+        personality_keywords,
+        runtime_settings=runtime_settings,
+    )
+    if "error" in story_result:
+        raise RuntimeError(f"Story generation failed: {story_result['error']}")
 
-        logger.info("Step 2/4: Sectioning story...")
-        section_result = get_story_sections(
-            provider,
-            full_story_text,
-            runtime_settings=runtime_settings,
+    full_story_text = story_result["story_text"]
+
+    _emit_progress("sections", 1, pre_section_total)
+    logger.info("Step 2/4: Sectioning story...")
+    section_result = get_story_sections(
+        provider,
+        full_story_text,
+        runtime_settings=runtime_settings,
+    )
+    if "error" in section_result:
+        raise RuntimeError(f"Story sectioning failed: {section_result['error']}")
+
+    story_sections = section_result["sections"]
+
+    total_progress_units = len(story_sections) + 3  # story + sectioning + each section image + finalize
+    _emit_progress("images", 2, total_progress_units)
+    logger.info("Step 3/4: Starting parallel generation of prompts and images...")
+    threads = []
+    section_results = [None] * len(story_sections)
+    done_counter = {"count": 0}
+    done_lock = threading.Lock()
+
+    def _on_section_complete() -> None:
+        with done_lock:
+            done_counter["count"] += 1
+            done_value = done_counter["count"]
+        _emit_progress("images", 2 + done_value, total_progress_units)
+
+    for index, section_text in enumerate(story_sections):
+        thread = threading.Thread(
+            target=process_section_thread,
+            args=(
+                index,
+                section_text,
+                theme,
+                story_characters,
+                provider,
+                runtime_settings,
+                section_results,
+                _on_section_complete,
+            ),
         )
-        if "error" in section_result:
-            raise Exception(f"Story sectioning failed: {section_result['error']}")
+        threads.append(thread)
+        thread.start()
 
-        story_sections = section_result["sections"]
+    for thread in threads:
+        thread.join()
 
-        logger.info("Step 3/4: Starting parallel generation of prompts and images...")
-        threads = []
-        section_results = [None] * len(story_sections)
+    book_pages = []
+    encountered_error = False
 
-        for index, section_text in enumerate(story_sections):
-            thread = threading.Thread(
-                target=process_section_thread,
-                args=(
-                    index,
-                    section_text,
-                    theme,
-                    story_characters,
-                    provider,
-                    runtime_settings,
-                    section_results,
-                ),
-            )
-            threads.append(thread)
-            thread.start()
-
-        for thread in threads:
-            thread.join()
-
-        book_pages = []
-        encountered_error = False
-
-        for index, result in enumerate(section_results):
-            if result is None:
-                encountered_error = True
-                book_pages.append(
-                    {
-                        "text": story_sections[index],
-                        "segment_index": index,
-                        "segment_text": story_sections[index],
-                        "error": "Processing failed unexpectedly.",
-                        "b64_json": None,
-                    }
-                )
-            elif "error" in result:
-                encountered_error = True
-                error_page = {
-                    "text": result.get("text", story_sections[index]),
-                    "segment_index": result.get("segment_index", index),
-                    "segment_text": result.get("segment_text", story_sections[index]),
-                    "error": result["error"],
+    for index, result in enumerate(section_results):
+        if result is None:
+            encountered_error = True
+            book_pages.append(
+                {
+                    "text": story_sections[index],
+                    "segment_index": index,
+                    "segment_text": story_sections[index],
+                    "error": "Processing failed unexpectedly.",
                     "b64_json": None,
                 }
-                for key in (
-                    "characters",
-                    "detected_character_names",
-                    "image_prompt",
-                    "reference_character_names",
-                    "generation_trace",
-                ):
-                    if key in result:
-                        error_page[key] = result[key]
-                book_pages.append(error_page)
-            else:
-                book_pages.append(result)
+            )
+        elif "error" in result:
+            encountered_error = True
+            error_page = {
+                "text": result.get("text", story_sections[index]),
+                "segment_index": result.get("segment_index", index),
+                "segment_text": result.get("segment_text", story_sections[index]),
+                "error": result["error"],
+                "b64_json": None,
+            }
+            for key in (
+                "characters",
+                "detected_character_names",
+                "image_prompt",
+                "reference_character_names",
+                "generation_trace",
+            ):
+                if key in result:
+                    error_page[key] = result[key]
+            book_pages.append(error_page)
+        else:
+            book_pages.append(result)
 
-        if encountered_error:
-            return jsonify(
-                {
-                    "pages": book_pages,
-                    "warning": "Some pages encountered errors during image generation.",
-                }
-            ), 200
+    _emit_progress("finalize", total_progress_units, total_progress_units)
 
-        return jsonify({"pages": book_pages}), 200
+    result_payload: Dict[str, Any] = {"pages": book_pages}
+    if encountered_error:
+        result_payload["warning"] = "Some pages encountered errors during image generation."
+    return result_payload
+
+
+def _run_book_job(job_id: str, request_data: Dict[str, Any]) -> None:
+    job = _get_book_job(job_id)
+    if not job:
+        return
+
+    job["status"] = "running"
+    job["stage"] = "story"
+    job["error"] = ""
+    job["progress_current"] = 0
+    job["progress_total"] = 3
+    job["progress_percent"] = 0
+    _save_book_job(job)
+
+    provider, runtime_settings = parse_provider_context(request_data)
+    if not is_provider_ready(provider):
+        job["status"] = "failed"
+        job["stage"] = "failed"
+        job["error"] = f"Provider '{provider}' is not available."
+        job["progress_current"] = 0
+        job["progress_total"] = 1
+        job["progress_percent"] = 0
+        job["completed_at"] = _utc_now_iso()
+        _save_book_job(job)
+        return
+
+    def _progress(payload: Dict[str, Any]) -> None:
+        current_job = _get_book_job(job_id)
+        if not current_job:
+            return
+        current_job["stage"] = str(payload.get("stage", current_job.get("stage", ""))).strip() or current_job.get(
+            "stage", ""
+        )
+        current_job["progress_current"] = int(payload.get("progress_current", current_job.get("progress_current", 0)) or 0)
+        current_job["progress_total"] = int(payload.get("progress_total", current_job.get("progress_total", 0)) or 0)
+        current_job["progress_percent"] = int(
+            payload.get("progress_percent", current_job.get("progress_percent", 0)) or 0
+        )
+        _save_book_job(current_job)
+
+    try:
+        result = _generate_book_content(
+            request_data,
+            provider,
+            runtime_settings,
+            progress_callback=_progress,
+        )
+        job = _get_book_job(job_id) or job
+        pages = result.get("pages", [])
+        job["status"] = "completed"
+        job["stage"] = "completed"
+        job["pages"] = pages if isinstance(pages, list) else []
+        job["page_count"] = len(job["pages"])
+        job["warning"] = str(result.get("warning", "")).strip()
+        job["error"] = ""
+        job["progress_current"] = max(job.get("progress_current", 0), job.get("progress_total", 0), 1)
+        job["progress_total"] = max(job.get("progress_total", 0), 1)
+        job["progress_percent"] = 100
+        job["completed_at"] = _utc_now_iso()
+        _save_book_job(job)
+    except Exception as exc:
+        logger.error("Async book job failed [%s]: %s", job_id, exc)
+        logger.error(traceback.format_exc())
+        job = _get_book_job(job_id) or job
+        job["status"] = "failed"
+        job["stage"] = "failed"
+        job["error"] = str(exc)
+        job["progress_percent"] = max(0, min(int(job.get("progress_percent", 0) or 0), 99))
+        job["completed_at"] = _utc_now_iso()
+        _save_book_job(job)
+
+
+@app.route("/api/book/jobs", methods=["POST"])
+def create_book_job():
+    data = request.json
+    if not data:
+        return jsonify({"error": "Invalid JSON payload"}), 400
+
+    provider, _runtime_settings = parse_provider_context(data)
+    if not is_provider_ready(provider):
+        return jsonify({"error": f"Provider '{provider}' is not available."}), 503
+
+    try:
+        prepared = _prepare_book_generation_input(data)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     except Exception as exc:
-        logger.error(f"Error during book generation: {exc}")
-        logger.error(traceback.format_exc())
-        return jsonify({"error": "Book generation failed: An internal error occurred."}), 500
+        logger.error("Error validating async book job payload: %s", exc)
+        return jsonify({"error": "Invalid book generation payload."}), 400
+
+    created_at = _utc_now_iso()
+    job_id = uuid.uuid4().hex
+    job = {
+        "job_id": job_id,
+        "status": "queued",
+        "stage": "queued",
+        "provider": provider,
+        "child_name": prepared["child_name"],
+        "theme": prepared["theme"],
+        "plot_choice": prepared["plot_choice"],
+        "created_at": created_at,
+        "updated_at": created_at,
+        "completed_at": "",
+        "error": "",
+        "warning": "",
+        "page_count": 0,
+        "pages": [],
+        "progress_current": 0,
+        "progress_total": 3,
+        "progress_percent": 0,
+    }
+    _save_book_job(job)
+
+    thread = threading.Thread(
+        target=_run_book_job,
+        args=(job_id, data),
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({"job": _book_job_summary(job)}), 202
+
+
+@app.route("/api/book/jobs", methods=["GET"])
+def list_book_jobs():
+    requested_ids = request.args.get("ids", "")
+    requested_id_set = {
+        token.strip()
+        for token in requested_ids.split(",")
+        if token.strip()
+    }
+
+    jobs = _list_book_jobs()
+    if requested_id_set:
+        jobs = [job for job in jobs if str(job.get("job_id", "")) in requested_id_set]
+
+    return jsonify({"jobs": [_book_job_summary(job) for job in jobs]}), 200
+
+
+@app.route("/api/book/jobs/<job_id>", methods=["GET"])
+def get_book_job(job_id: str):
+    job = _get_book_job(job_id)
+    if not job:
+        return jsonify({"error": "Book job not found."}), 404
+
+    response = _book_job_summary(job)
+    include_pages = _truthy_query_param(request.args.get("include_pages"))
+    if include_pages:
+        response["pages"] = job.get("pages", [])
+    return jsonify(response), 200
 
 
 @app.route("/api/validate/book-match", methods=["POST"])

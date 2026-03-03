@@ -619,6 +619,85 @@ def _sanitize_string_list(
     return cleaned if cleaned else fallback
 
 
+def _sanitize_profile_list(value: Any) -> List[str]:
+    if isinstance(value, list):
+        return _sanitize_string_list(value, fallback=[])
+    if isinstance(value, str):
+        return _split_listish_string(value, allow_comma_split=True)
+    return []
+
+
+def _normalize_visual_profile_payload(
+    payload: Dict[str, Any],
+    *,
+    character_name: str = "",
+    character_description: str = "",
+) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        payload = {}
+
+    source = payload
+    nested_profile = payload.get("visual_profile")
+    if isinstance(nested_profile, dict):
+        source = nested_profile
+
+    summary = _sanitize_string(source.get("summary") or source.get("profile_summary"))
+    appearance = _sanitize_profile_list(source.get("appearance"))
+    clothing = _sanitize_profile_list(source.get("clothing"))
+    colors = _sanitize_profile_list(source.get("colors"))
+    accessories = _sanitize_profile_list(source.get("accessories"))
+    distinctive_features = _sanitize_profile_list(source.get("distinctive_features"))
+    style_notes = _sanitize_profile_list(source.get("style_notes"))
+    consistency_prompt = _sanitize_string(source.get("consistency_prompt"))
+
+    if not summary:
+        summary_parts: List[str] = []
+        if character_name:
+            summary_parts.append(f"{character_name} visual reference.")
+        if clothing:
+            summary_parts.append(f"Clothing: {', '.join(clothing[:4])}.")
+        if colors:
+            summary_parts.append(f"Color palette: {', '.join(colors[:4])}.")
+        if distinctive_features:
+            summary_parts.append(f"Distinctive features: {', '.join(distinctive_features[:4])}.")
+        if not summary_parts and character_description:
+            summary_parts.append(character_description)
+        summary = " ".join(summary_parts).strip()
+
+    if not consistency_prompt:
+        prompt_parts: List[str] = []
+        if character_name:
+            prompt_parts.append(f"Keep {character_name} consistent across all scenes.")
+        if clothing:
+            prompt_parts.append(f"Maintain clothing: {', '.join(clothing[:5])}.")
+        if colors:
+            prompt_parts.append(f"Use recurring colors: {', '.join(colors[:5])}.")
+        if accessories:
+            prompt_parts.append(f"Retain accessories: {', '.join(accessories[:5])}.")
+        if distinctive_features:
+            prompt_parts.append(f"Preserve distinctive features: {', '.join(distinctive_features[:5])}.")
+        consistency_prompt = " ".join(prompt_parts).strip()
+
+    normalized: Dict[str, Any] = {}
+    if summary:
+        normalized["summary"] = summary[:800]
+    if appearance:
+        normalized["appearance"] = appearance[:16]
+    if clothing:
+        normalized["clothing"] = clothing[:16]
+    if colors:
+        normalized["colors"] = colors[:16]
+    if accessories:
+        normalized["accessories"] = accessories[:16]
+    if distinctive_features:
+        normalized["distinctive_features"] = distinctive_features[:16]
+    if style_notes:
+        normalized["style_notes"] = style_notes[:16]
+    if consistency_prompt:
+        normalized["consistency_prompt"] = consistency_prompt[:1200]
+    return normalized
+
+
 _CHARACTER_NAME_STOPWORDS = {"the", "a", "an"}
 
 
@@ -1338,6 +1417,97 @@ def create_image_prompt_for_section(
     except Exception as exc:
         logger.error(f"Error creating Gemini image prompt: {exc}")
         return {"error": f"Error creating image prompt: {exc}"}
+
+
+def understand_image(
+    image_b64: str,
+    mime_type: str = "image/png",
+    character_name: str = "",
+    character_description: str = "",
+    runtime_settings: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if not is_client_ready():
+        return {"error": "Gemini client not ready.", "error_code": "service_unavailable"}
+
+    clean_b64 = _sanitize_string(image_b64)
+    if not clean_b64:
+        return {"error": "Image data is required.", "error_code": "invalid_request"}
+    if clean_b64.startswith("data:") and "," in clean_b64:
+        clean_b64 = clean_b64.split(",", 1)[1]
+
+    safe_mime = _sanitize_string(mime_type, "image/png")
+    if not safe_mime.startswith("image/"):
+        safe_mime = "image/png"
+
+    try:
+        image_bytes = base64.b64decode(clean_b64, validate=True)
+    except Exception:
+        try:
+            image_bytes = base64.b64decode(clean_b64)
+        except Exception:
+            return {"error": "Invalid base64 image payload.", "error_code": "invalid_request"}
+
+    analysis_prompt = (
+        "Analyze this single character reference image and return one JSON object only with these fields: "
+        "summary (string), appearance (array of strings), clothing (array of strings), "
+        "colors (array of strings), accessories (array of strings), "
+        "distinctive_features (array of strings), style_notes (array of strings), "
+        "consistency_prompt (string for future image generation). "
+        "Focus on observable visual details only."
+    )
+    if character_name:
+        analysis_prompt += f" Character name: {character_name}."
+    if character_description:
+        analysis_prompt += f" Story description context: {character_description}."
+
+    selected_model = _text_model(runtime_settings, "sectioning")
+    models_to_try: List[str] = [selected_model]
+    for fallback_model in ("gemini-2.5-flash", "gemini-3-flash-preview"):
+        if fallback_model not in models_to_try:
+            models_to_try.append(fallback_model)
+
+    parse_errors: List[str] = []
+    for model_name in models_to_try:
+        try:
+            client = _get_genai_client()
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[
+                    types.Part.from_text(text=analysis_prompt),
+                    types.Part.from_bytes(data=image_bytes, mime_type=safe_mime),
+                ],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1,
+                ),
+            )
+
+            raw_text = _sanitize_string(getattr(response, "text", ""))
+            if not raw_text:
+                candidate_text_parts: List[str] = []
+                for part in _iter_sdk_response_parts(response):
+                    text_part = getattr(part, "text", None)
+                    if text_part:
+                        candidate_text_parts.append(str(text_part))
+                raw_text = "\n".join(candidate_text_parts).strip()
+            if not raw_text:
+                raise ValueError("Gemini image understanding returned empty output.")
+
+            parsed = _parse_json_object_from_text(raw_text)
+            profile = _normalize_visual_profile_payload(
+                parsed,
+                character_name=character_name,
+                character_description=character_description,
+            )
+            if not profile:
+                raise ValueError("Gemini image understanding returned an empty profile.")
+            return {"visual_profile": profile}
+        except Exception as exc:
+            parse_errors.append(f"model={model_name}: {exc}")
+
+    error_summary = " | ".join(parse_errors[:4]) if parse_errors else "Unknown parse error."
+    logger.error("Gemini image understanding failed: %s", error_summary)
+    return {"error": f"Failed to understand image: {error_summary}", "error_code": "invalid_response"}
 
 
 def _supports_image_size(model_name: str) -> bool:

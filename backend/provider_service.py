@@ -428,6 +428,25 @@ def generate_image(provider: str, description: str, runtime_settings: Optional[D
     )
 
 
+def understand_image(
+    provider: str,
+    image_b64: str,
+    mime_type: str = "image/png",
+    character_name: str = "",
+    character_description: str = "",
+    runtime_settings: Optional[Dict[str, Any]] = None,
+):
+    return _dispatch(
+        provider,
+        "understand_image",
+        image_b64,
+        mime_type,
+        character_name,
+        character_description,
+        runtime_settings=runtime_settings,
+    )
+
+
 def generate_image_with_references(
     provider: str,
     description: str,
